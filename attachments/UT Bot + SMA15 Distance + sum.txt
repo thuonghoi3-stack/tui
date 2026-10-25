@@ -1,0 +1,213 @@
+//@version=5
+strategy("UT Bot + SMA15 Distance", overlay=true,
+     initial_capital=10000, default_qty_type=strategy.percent_of_equity, default_qty_value=100,
+     commission_type=strategy.commission.percent, commission_value=0.05, pyramiding=0)
+
+// ============================== INPUTS ==============================
+grpUT = "UT Bot (tín hiệu vào lệnh)"
+a = input.float(1.0, "Key Value (độ nhạy)", step=0.1, group=grpUT)
+c = input.int(10, "ATR Period", minval=1, group=grpUT)
+h = input.bool(false, "Tín hiệu từ nến Heikin Ashi", group=grpUT)
+
+grpSma = "Lọc SMA"
+smaLen  = input.int(15, "SMA Length", minval=1, group=grpSma)
+smaDist = input.float(2.0, "Khoảng cách tới SMA (%)", minval=0.0, step=0.1, group=grpSma,
+     tooltip="Long: giá phải thấp hơn SMA ít nhất X%.\nShort: giá phải cao hơn SMA ít nhất X%.")
+smaLook = input.int(5, "Nhìn lại N nến", minval=0, group=grpSma,
+     tooltip="UT flip chỉ xảy ra sau khi giá đã quay đầu, nên điều kiện khoảng cách được phép xảy ra trong N nến gần nhất (tính cả nến flip). 0 = chỉ xét đúng nến flip.")
+useExtreme = input.bool(true, "Đo bằng High/Low (tắt = Close)", group=grpSma,
+     tooltip="Bật: Long đo bằng Low, Short đo bằng High. Tắt: đo bằng giá đóng cửa.")
+
+grpTrade = "Giao dịch"
+allowLong  = input.bool(true, "Cho phép Long", group=grpTrade)
+allowShort = input.bool(true, "Cho phép Short", group=grpTrade)
+useSLTP    = input.bool(true, "Dùng SL/TP theo %", group=grpTrade)
+slPct      = input.float(1.5, "SL %", minval=0.1, step=0.1, group=grpTrade)
+tpPct      = input.float(3.0, "TP %", minval=0.1, step=0.1, group=grpTrade)
+
+grpStats = "Thống kê"
+statsMode = input.string("Both", "Hiển thị thống kê", options=["Table", "Label", "Both", "Off"], group=grpStats,
+     tooltip="Table: bảng ở góc dưới phải.\nLabel: ô chữ ở nến cuối (dùng khi app điện thoại không hiện bảng).\nBoth: hiện cả hai.")
+
+// ============================== UT BOT ==============================
+xATR  = ta.atr(c)
+nLoss = a * xATR
+
+srcHA = request.security(ticker.heikinashi(syminfo.tickerid), timeframe.period, close, lookahead=barmerge.lookahead_off)
+src   = h ? srcHA : close
+
+float xATRTrailingStop = 0.0
+prevStop = nz(xATRTrailingStop[1], 0)
+xATRTrailingStop := src > prevStop and src[1] > prevStop ? math.max(prevStop, src - nLoss) :
+     src < prevStop and src[1] < prevStop ? math.min(prevStop, src + nLoss) :
+     src > prevStop ? src - nLoss : src + nLoss
+
+// ema(src,1) == src nên crossover(ema, stop) tương đương crossover(src, stop)
+buyUT  = src > xATRTrailingStop and ta.crossover(src, xATRTrailingStop)
+sellUT = src < xATRTrailingStop and ta.crossunder(src, xATRTrailingStop)
+
+// ============================== LỌC SMA ==============================
+smaF     = ta.sma(close, smaLen)
+devLow   = ((useExtreme ? low : close) / smaF - 1) * 100    // độ lệch xuống dưới SMA
+devHigh  = ((useExtreme ? high : close) / smaF - 1) * 100   // độ lệch lên trên SMA
+farBelow = ta.lowest(devLow, smaLook + 1) <= -smaDist       // trong N nến gần nhất giá từng thấp hơn SMA >= X%
+farAbove = ta.highest(devHigh, smaLook + 1) >= smaDist      // trong N nến gần nhất giá từng cao hơn SMA >= X%
+
+// ============================== TÍN HIỆU ==============================
+longSignal  = buyUT  and farBelow    // UT Buy + giá từng thấp hơn SMA >= X% trong N nến gần nhất
+shortSignal = sellUT and farAbove    // UT Sell + giá từng cao hơn SMA >= X% trong N nến gần nhất
+
+// ============================== ORDERS ==============================
+if longSignal and allowLong
+    strategy.entry("Long", strategy.long)
+if shortSignal and allowShort
+    strategy.entry("Short", strategy.short)
+
+if useSLTP
+    if strategy.position_size > 0
+        strategy.exit("Exit Long", from_entry="Long",
+             stop=strategy.position_avg_price * (1 - slPct / 100),
+             limit=strategy.position_avg_price * (1 + tpPct / 100))
+    if strategy.position_size < 0
+        strategy.exit("Exit Short", from_entry="Short",
+             stop=strategy.position_avg_price * (1 + slPct / 100),
+             limit=strategy.position_avg_price * (1 - tpPct / 100))
+
+// ============================== PLOTS ==============================
+plot(smaF, "SMA", color=color.orange, linewidth=1)
+plot(smaF * (1 - smaDist / 100), "SMA - X%", color=color.new(color.green, 50), linewidth=1)
+plot(smaF * (1 + smaDist / 100), "SMA + X%", color=color.new(color.red, 50), linewidth=1)
+plot(xATRTrailingStop, "UT Trailing Stop", color=src > xATRTrailingStop ? color.new(color.green, 40) : color.new(color.red, 40), linewidth=1)
+
+// tam giác nhỏ = UT flip bị lọc SMA loại; nhãn = tín hiệu hợp lệ (vào lệnh ở nến kế tiếp)
+plotshape(buyUT and not longSignal, title="UT Buy (bị lọc)", style=shape.triangleup, location=location.belowbar,
+     color=color.new(color.gray, 50), size=size.tiny)
+plotshape(sellUT and not shortSignal, title="UT Sell (bị lọc)", style=shape.triangledown, location=location.abovebar,
+     color=color.new(color.gray, 50), size=size.tiny)
+plotshape(longSignal, title="Long", text="Long", style=shape.labelup, location=location.belowbar,
+     color=color.green, textcolor=color.white, size=size.tiny)
+plotshape(shortSignal, title="Short", text="Short", style=shape.labeldown, location=location.abovebar,
+     color=color.red, textcolor=color.white, size=size.tiny)
+
+// ============================== BẢNG ĐẾM TÍN HIỆU ==============================
+var int nBuyUT  = 0
+var int nSellUT = 0
+var int nLong   = 0
+var int nShort  = 0
+
+nBuyUT  += buyUT ? 1 : 0
+nSellUT += sellUT ? 1 : 0
+nLong   += longSignal ? 1 : 0
+nShort  += shortSignal ? 1 : 0
+
+var table tbl = table.new(position.top_right, 3, 3, bgcolor=color.new(color.black, 25), border_width=1)
+if barstate.islast
+    table.cell(tbl, 0, 0, "Tín hiệu", text_color=color.white, text_size=size.small)
+    table.cell(tbl, 1, 0, "Long", text_color=color.white, text_size=size.small)
+    table.cell(tbl, 2, 0, "Short", text_color=color.white, text_size=size.small)
+    table.cell(tbl, 0, 1, "UT Bot flip", text_color=color.white, text_size=size.small)
+    table.cell(tbl, 1, 1, str.tostring(nBuyUT), text_color=color.white, text_size=size.small)
+    table.cell(tbl, 2, 1, str.tostring(nSellUT), text_color=color.white, text_size=size.small)
+    table.cell(tbl, 0, 2, "+ SMA " + str.tostring(smaDist, "#.##") + "%", text_color=color.white, text_size=size.small)
+    table.cell(tbl, 1, 2, str.tostring(nLong), text_color=color.white, text_size=size.small)
+    table.cell(tbl, 2, 2, str.tostring(nShort), text_color=color.white, text_size=size.small)
+
+// ============================== THỐNG KÊ WINRATE / PNL ==============================
+// PnL mỗi lệnh = (giá thoát - giá vào) * size - phí. size > 0 là Long, size < 0 là Short.
+int   lN  = 0
+int   lW  = 0
+float lGP = 0.0
+float lGL = 0.0
+int   sN  = 0
+int   sW  = 0
+float sGP = 0.0
+float sGL = 0.0
+
+if barstate.islast and strategy.closedtrades > 0
+    for i = 0 to strategy.closedtrades - 1
+        float tp = (strategy.closedtrades.exit_price(i) - strategy.closedtrades.entry_price(i)) * strategy.closedtrades.size(i) - strategy.closedtrades.commission(i)
+        if strategy.closedtrades.size(i) > 0
+            lN += 1
+            if tp > 0
+                lW += 1
+                lGP += tp
+            else if tp < 0
+                lGL += -tp
+        else
+            sN += 1
+            if tp > 0
+                sW += 1
+                sGP += tp
+            else if tp < 0
+                sGL += -tp
+
+showTbl = statsMode == "Table" or statsMode == "Both"
+showLbl = statsMode == "Label" or statsMode == "Both"
+
+var table perf    = na
+var label perfLbl = na
+
+wr(n, w) => n > 0 ? w / n * 100.0 : na
+pf(gp, gl) => gl > 0 ? gp / gl : na
+fmt(x) => na(x) ? "-" : str.tostring(x, "#.##")
+pnlCol(x) => na(x) ? color.white : x > 0 ? color.lime : x < 0 ? color.red : color.white
+setCell(r, c, txt, col) =>
+    table.cell(perf, c, r, txt, text_color=col, text_size=size.small)
+
+hi100 = ta.highest(high, 100)
+
+if barstate.islast and (showTbl or showLbl)
+    float ic    = strategy.initial_capital
+    int   tN    = lN + sN
+    int   tW    = lW + sW
+    float tGP   = lGP + sGP
+    float tGL   = lGL + sGL
+    float lPnl  = lGP - lGL
+    float sPnl  = sGP - sGL
+    float tPnl  = lPnl + sPnl
+    float ddPct = strategy.max_drawdown / ic * 100.0
+
+    if showTbl
+        if na(perf)
+            perf := table.new(position.bottom_right, 4, 8, bgcolor=color.new(color.black, 25), border_width=1)
+        setCell(0, 0, "Thống kê", color.white)
+        setCell(0, 1, "Tổng", color.white)
+        setCell(0, 2, "Long", color.white)
+        setCell(0, 3, "Short", color.white)
+        setCell(1, 0, "Số lệnh", color.white)
+        setCell(1, 1, str.tostring(tN), color.white)
+        setCell(1, 2, str.tostring(lN), color.white)
+        setCell(1, 3, str.tostring(sN), color.white)
+        setCell(2, 0, "Winrate %", color.white)
+        setCell(2, 1, fmt(wr(tN, tW)), color.white)
+        setCell(2, 2, fmt(wr(lN, lW)), color.white)
+        setCell(2, 3, fmt(wr(sN, sW)), color.white)
+        setCell(3, 0, "PnL", color.white)
+        setCell(3, 1, fmt(tPnl), pnlCol(tPnl))
+        setCell(3, 2, fmt(lPnl), pnlCol(lPnl))
+        setCell(3, 3, fmt(sPnl), pnlCol(sPnl))
+        setCell(4, 0, "PnL %", color.white)
+        setCell(4, 1, fmt(tPnl / ic * 100.0), pnlCol(tPnl))
+        setCell(4, 2, fmt(lPnl / ic * 100.0), pnlCol(lPnl))
+        setCell(4, 3, fmt(sPnl / ic * 100.0), pnlCol(sPnl))
+        setCell(5, 0, "Profit factor", color.white)
+        setCell(5, 1, fmt(pf(tGP, tGL)), color.white)
+        setCell(5, 2, fmt(pf(lGP, lGL)), color.white)
+        setCell(5, 3, fmt(pf(sGP, sGL)), color.white)
+        setCell(6, 0, "Max DD %", color.white)
+        setCell(6, 1, fmt(ddPct), color.white)
+        setCell(6, 2, "", color.white)
+        setCell(6, 3, "", color.white)
+        setCell(7, 0, "Đang mở", color.white)
+        setCell(7, 1, fmt(strategy.openprofit), pnlCol(strategy.openprofit))
+        setCell(7, 2, "", color.white)
+        setCell(7, 3, "", color.white)
+
+    if showLbl
+        string txt = "Tổng: " + str.tostring(tN) + " lệnh | Win " + fmt(wr(tN, tW)) + "% | PF " + fmt(pf(tGP, tGL))
+        txt += "\nPnL: " + fmt(tPnl) + " (" + fmt(tPnl / ic * 100.0) + "%) | MaxDD " + fmt(ddPct) + "%"
+        txt += "\nLong: " + str.tostring(lN) + " lệnh | Win " + fmt(wr(lN, lW)) + "% | PnL " + fmt(lPnl)
+        txt += "\nShort: " + str.tostring(sN) + " lệnh | Win " + fmt(wr(sN, sW)) + "% | PnL " + fmt(sPnl)
+        label.delete(perfLbl)
+        perfLbl := label.new(bar_index, hi100, txt, style=label.style_label_right,
+             color=color.new(color.black, 15), textcolor=color.white, size=size.small, textalign=text.align_left)

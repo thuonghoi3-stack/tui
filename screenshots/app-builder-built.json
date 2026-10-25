@@ -1,0 +1,43 @@
+{
+  "url": "http://127.0.0.1:8081/",
+  "viewports": {
+    "desktop": {
+      "width": 1280,
+      "height": 800,
+      "status": 200,
+      "title": "ORCA",
+      "hasCanvas": false,
+      "bodyTextLen": 725,
+      "bodyTextHash": "ca1f6f39d57de50bb562126639385ce775b46e386c0576007332df360420dbee",
+      "bodyTextPrefix": "ORCA UT · Phiên · Cá voi 5 phút 15 phút 1 giờ 4 giờ VN 02:11:42 ",
+      "horizontalOverflow": false,
+      "consoleErrors": [],
+      "pageErrors": [],
+      "screenshot": "/workspace/screenshots/app-builder-built.png"
+    },
+    "mobile": {
+      "width": 390,
+      "height": 844,
+      "status": 200,
+      "title": "ORCA",
+      "hasCanvas": false,
+      "bodyTextLen": 18580,
+      "bodyTextHash": "49c21cdb876914d0e421dfc935ecf4925e8fbc8a280120f13fc064a02bd8e7dd",
+      "bodyTextPrefix": "ORCA UT · Phiên · Cá voi 5 phút 15 phút 1 giờ 4 giờ VN 02:11:43 ",
+      "horizontalOverflow": false,
+      "consoleErrors": [],
+      "pageErrors": [],
+      "screenshot": "/workspace/screenshots/app-builder-built-mobile.png"
+    }
+  },
+  "brandWarnings": [
+    "BRAND NOTE: no custom public/og.jpg — the platform will serve the og.grok.me placeholder. Custom cards are the default for games of every kind (DOM board/word games included), whimsical apps, creative tools, and brand-forward pages — only plain utilities (converters, CRUD trackers, admin dashboards) keep the placeholder. If this app is not a plain utility, finish the brand-asset pass per /workspace/.grok/skills/og/SKILL.md."
+  ],
+  "authWarnings": [],
+  "verdictFile": "/workspace/screenshots/app-builder-built.json",
+  "divergesFromBaseline": true,
+  "baselineReasons": [
+    "desktop: body text replaced (similar length, page start changed)",
+    "mobile: body text changed (11336 -> 18580 chars, hash mismatch)"
+  ]
+}
