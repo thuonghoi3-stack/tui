@@ -1,5 +1,7 @@
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import {
+  clampParams,
+  defaultParams,
   hourOf,
   pnlPct,
   SESSIONS,
@@ -93,7 +95,7 @@ export function SignalDock({
         <p className="px-3 pb-3 text-sm text-line">Khung 4 giờ làm thống kê theo giờ rất thưa. Nên xem 15 phút hoặc 1 giờ.</p>
       ) : null}
       <p className="px-3 pb-3 text-xs text-muted">
-        UT và bộ lọc SMA theo strategy. Phiên và cá voi chỉ loại lệnh khi thuận chiều quá rõ, vì đây là lệnh đảo chứ không phải lệnh đuổi. Sổ lệnh là giấy, không phải lệnh thật và không phải lời khuyên đầu tư.
+        UT theo strategy. Wyckoff là sơ đồ tích lũy hoặc phân phối trên đúng khung nến. Phiên và cá voi chỉ loại khi thuận chiều quá rõ. Sổ lệnh là giấy, không phải lệnh thật và không phải lời khuyên đầu tư.
       </p>
     </section>
   );
@@ -206,7 +208,7 @@ export function Journal({
   onClear: () => void;
 }) {
   const closed = rows.filter((row) => row.status !== "open");
-  const wins = closed.filter((row) => row.status === "tp").length;
+  const wins = closed.filter((row) => (pnlPct(row) || 0) > 0).length;
   const winRate = closed.length ? (wins / closed.length) * 100 : Number.NaN;
   const sum = closed.reduce((total, row) => total + (pnlPct(row) || 0), 0);
   return (
@@ -225,7 +227,7 @@ export function Journal({
       </div>
       {rows.length === 0 ? (
         <p className="px-3 py-3 text-sm text-muted">
-          Chưa có lệnh. Sổ chỉ ghi sau nến đóng, khi các cổng đang bật không thấy phiên hoặc cá voi thuận chiều quá rõ.
+          Chưa có lệnh. Sổ chỉ ghi sau nến đóng, khi đã có sơ đồ Wyckoff và các cổng đang bật không chặn.
         </p>
       ) : (
         <>
@@ -291,9 +293,10 @@ export function Journal({
 }
 
 function GateNotes({ row }: { row: Paper }) {
-  if (!row.sessionNote && !row.whaleNote) return null;
+  if (!row.sessionNote && !row.whaleNote && !row.wyckoffNote) return null;
   return (
     <span className="mt-0.5 block font-mono text-xs leading-snug text-muted">
+      {row.wyckoffNote ? <span className="block">Wyckoff · {row.wyckoffNote}</span> : null}
       {row.sessionNote ? <span className="block">Phiên đạt · {row.sessionNote}</span> : null}
       {row.whaleNote ? <span className="block">Cá voi đạt · {row.whaleNote}</span> : null}
     </span>
@@ -302,7 +305,7 @@ function GateNotes({ row }: { row: Paper }) {
 
 function TradeResult({ row, mark }: { row: Paper; mark?: number }) {
   const value = pnlPct(row, mark);
-  const label = row.status === "tp" ? "TP" : row.status === "sl" ? "SL" : "Mở";
+  const label = row.status === "tp" ? "TP" : row.status === "sl" ? "SL" : row.status === "reverse" ? "Đảo" : "Mở";
   const color = !Number.isFinite(value) ? "text-muted" : value >= 0 ? "text-bull" : "text-bear";
   return (
     <span className={`font-mono text-sm ${color}`}>
@@ -311,45 +314,58 @@ function TradeResult({ row, mark }: { row: Paper; mark?: number }) {
   );
 }
 
-export function Settings({
-  params,
-  onChange,
-  onReset,
-}: {
-  params: Params;
-  onChange: (patch: Partial<Params>) => void;
-  onReset: () => void;
-}) {
+export function Settings({ params, onApply }: { params: Params; onApply: (next: Params) => void }) {
+  const [draft, setDraft] = useState(params);
+  useEffect(() => {
+    setDraft(params);
+  }, [params]);
+  const pending = JSON.stringify(clampParams(draft)) !== JSON.stringify(params);
+  const patch = (next: Partial<Params>) => setDraft((prev) => clampParams({ ...prev, ...next }));
   return (
     <details className="group rounded-md border border-border bg-surface">
       <summary className="flex h-11 cursor-pointer list-none items-center justify-between px-3 text-sm text-fg">
-        Thông số UT, SMA, phiên, cá voi
+        Thông số UT, SMA, Wyckoff, phiên, cá voi
         <span className="text-muted group-open:hidden">Mở</span>
         <span className="hidden text-muted group-open:inline">Đóng</span>
       </summary>
       <div className="grid grid-cols-2 gap-3 px-3 pb-3">
-        <Num label="UT key" value={params.utKey} step={0.1} onChange={(utKey) => onChange({ utKey })} />
-        <Num label="ATR" value={params.atrPeriod} onChange={(atrPeriod) => onChange({ atrPeriod })} />
-        <Num label="SMA" value={params.smaLen} onChange={(smaLen) => onChange({ smaLen })} />
-        <Num label="Cách SMA %" value={params.smaDist} step={0.01} onChange={(smaDist) => onChange({ smaDist })} />
-        <Num label="Nhìn lại N nến" value={params.smaLook} onChange={(smaLook) => onChange({ smaLook })} />
-        <Num label="SL %" value={params.slPct} step={0.1} onChange={(slPct) => onChange({ slPct })} />
-        <Num label="TP %" value={params.tpPct} step={0.1} onChange={(tpPct) => onChange({ tpPct })} />
-        <Num label="Cá voi lookback" value={params.whaleLookback} onChange={(whaleLookback) => onChange({ whaleLookback })} />
-        <Num label="Số bin" value={params.whaleBins} onChange={(whaleBins) => onChange({ whaleBins })} />
-        <Num label="Ngưỡng mạnh %" value={params.strengthPct} onChange={(strengthPct) => onChange({ strengthPct })} />
-        <Num label="Tối thiểu nến / giờ" value={params.sessionMinBars} onChange={(sessionMinBars) => onChange({ sessionMinBars })} />
-        <Num label="Bull tối thiểu LONG" value={params.bullMin} step={1} onChange={(bullMin) => onChange({ bullMin })} />
-        <Num label="Bull tối đa SHORT" value={params.bearMax} onChange={(bearMax) => onChange({ bearMax })} />
-        <Toggle label="Bắt buộc cách SMA" on={params.requireSma} onClick={() => onChange({ requireSma: !params.requireSma })} />
-        <Toggle label="Đo bằng high/low" on={params.useExtreme} onClick={() => onChange({ useExtreme: !params.useExtreme })} />
-        <Toggle label="Bắt buộc phiên" on={params.requireSession} onClick={() => onChange({ requireSession: !params.requireSession })} />
-        <Toggle label="Bắt buộc cá voi" on={params.requireWhale} onClick={() => onChange({ requireWhale: !params.requireWhale })} />
-        <button type="button" className="col-span-2 h-11 rounded-md border border-border text-sm text-muted" onClick={onReset}>
-          Đưa thông số về mặc định strategy
+        <Num label="UT key" value={draft.utKey} step={0.1} onChange={(utKey) => patch({ utKey })} />
+        <Num label="ATR" value={draft.atrPeriod} onChange={(atrPeriod) => patch({ atrPeriod })} />
+        <Num label="SMA" value={draft.smaLen} onChange={(smaLen) => patch({ smaLen })} />
+        <Num label="Cách SMA %" value={draft.smaDist} step={0.01} onChange={(smaDist) => patch({ smaDist })} />
+        <Num label="Nhìn lại N nến" value={draft.smaLook} onChange={(smaLook) => patch({ smaLook })} />
+        <Num label="SL %" value={draft.slPct} step={0.1} onChange={(slPct) => patch({ slPct })} />
+        <Num label="TP %" value={draft.tpPct} step={0.1} onChange={(tpPct) => patch({ tpPct })} />
+        <Num label="Cá voi lookback" value={draft.whaleLookback} onChange={(whaleLookback) => patch({ whaleLookback })} />
+        <Num label="Số bin" value={draft.whaleBins} onChange={(whaleBins) => patch({ whaleBins })} />
+        <Num label="Ngưỡng mạnh %" value={draft.strengthPct} onChange={(strengthPct) => patch({ strengthPct })} />
+        <Num label="Tối thiểu nến / giờ" value={draft.sessionMinBars} onChange={(sessionMinBars) => patch({ sessionMinBars })} />
+        <Num label="Bull tối thiểu LONG" value={draft.bullMin} step={1} onChange={(bullMin) => patch({ bullMin })} />
+        <Num label="Bull tối đa SHORT" value={draft.bearMax} onChange={(bearMax) => patch({ bearMax })} />
+        <Toggle label="Bắt buộc cách SMA" on={draft.requireSma} onClick={() => patch({ requireSma: !draft.requireSma })} />
+        <Toggle label="Đo bằng high/low" on={draft.useExtreme} onClick={() => patch({ useExtreme: !draft.useExtreme })} />
+        <Toggle label="Bắt buộc Wyckoff" on={draft.requireWyckoff} onClick={() => patch({ requireWyckoff: !draft.requireWyckoff })} />
+        <Toggle label="Bắt buộc phiên" on={draft.requireSession} onClick={() => patch({ requireSession: !draft.requireSession })} />
+        <Toggle label="Bắt buộc cá voi" on={draft.requireWhale} onClick={() => patch({ requireWhale: !draft.requireWhale })} />
+        <Toggle label="Lọc điều chỉnh giả" on={draft.requireCorrection} onClick={() => patch({ requireCorrection: !draft.requireCorrection })} />
+        <button
+          type="button"
+          className="col-span-2 h-11 rounded-md bg-bull text-sm text-ink"
+          onMouseDown={() => {
+            const el = document.activeElement;
+            if (el instanceof HTMLElement) el.blur();
+          }}
+          onClick={() => onApply(clampParams(draft))}
+        >
+          Áp dụng và thống kê lại
+        </button>
+        <button type="button" className="col-span-2 h-11 rounded-md border border-border text-sm text-muted" onClick={() => setDraft(defaultParams)}>
+          Đưa form về mặc định
         </button>
         <p className="col-span-2 text-xs text-muted">
-          Sổ giấy vào lệnh khi nến đã đóng và mọi cổng đang bật không đuổi theo. Phiên chỉ chặn khi khung đang mở thuận chiều rõ. Cá voi chỉ chặn khi delta quanh giá cùng chiều từ 35%. Tắt công tắc thì cổng đó không chặn sổ.
+          {pending
+            ? "Thông số mới chưa vào thống kê. Bấm Áp dụng để tính lại sổ, biểu đồ và phiên."
+            : "Thống kê đang dùng SMA 1%, TP 12%, SL 12%, phiên bật, cá voi tắt. Lọc điều chỉnh bỏ lệnh cùng chiều cú hồi khi chưa tới 25% sóng hoặc cú hồi đã quá 10 nến."}
         </p>
       </div>
     </details>

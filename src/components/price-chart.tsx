@@ -7,13 +7,14 @@ type Props = {
   candles: Candle[];
   analysis: Analysis;
   trade: Paper | null;
+  exits: Paper[];
   pinned: number | null;
   onPin: (index: number | null) => void;
 };
 
 type Drag = { x: number; y: number; end: number; active: boolean };
 
-export function PriceChart({ resetKey, candles, analysis, trade, pinned, onPin }: Props) {
+export function PriceChart({ resetKey, candles, analysis, trade, exits, pinned, onPin }: Props) {
   const boxRef = useRef<HTMLDivElement>(null);
   const dragRef = useRef<Drag | null>(null);
   const [size, setSize] = useState({ w: 0, h: 0 });
@@ -78,6 +79,14 @@ export function PriceChart({ resetKey, candles, analysis, trade, pinned, onPin }
     minP = Math.min(minP, trade.sl, trade.tp);
     maxP = Math.max(maxP, trade.sl, trade.tp);
   }
+  for (const row of exits) {
+    if (row.exitTime == null || row.exit == null) continue;
+    const index = candles.findIndex((candle) => candle.time === row.exitTime);
+    if (index >= startIndex && index <= endIndex) {
+      minP = Math.min(minP, row.exit);
+      maxP = Math.max(maxP, row.exit);
+    }
+  }
   if (!Number.isFinite(minP) || !Number.isFinite(maxP) || maxP <= minP) {
     minP = 0;
     maxP = 1;
@@ -126,6 +135,20 @@ export function PriceChart({ resetKey, candles, analysis, trade, pinned, onPin }
 
   const hoverCandle = hover != null ? candles[hover] : null;
   const markersHere = analysis.markers.filter((marker) => marker.index >= startIndex && marker.index <= endIndex);
+  const timeAt = new Map(candles.map((candle, index) => [candle.time, index]));
+  const exitsHere = exits.flatMap((row) => {
+    if (!row.exitTime || row.exit == null) return [];
+    const index = timeAt.get(row.exitTime);
+    if (index == null || index < startIndex || index > endIndex) return [];
+    return [{ row, index }];
+  });
+  const exitMarks = new Map<string, { row: (typeof exits)[number]; index: number; n: number }>();
+  for (const item of exitsHere) {
+    const key = `${item.index}:${item.row.status}`;
+    const found = exitMarks.get(key);
+    if (found) found.n += 1;
+    else exitMarks.set(key, { ...item, n: 1 });
+  }
   const gridPrices = [0, 1, 2, 3].map((step) => maxP - ((maxP - minP) * step) / 3);
   const labelEvery = Math.max(1, Math.round(72 / Math.max(slot, 1)));
 
@@ -288,6 +311,38 @@ export function PriceChart({ resetKey, candles, analysis, trade, pinned, onPin }
               </g>
             );
           })}
+          {analysis.wyckoffRange ? (
+            <rect
+              x={Math.max(plotL, xOf(analysis.wyckoffRange.left))}
+              y={yOf(analysis.wyckoffRange.high)}
+              width={Math.max(0, Math.min(plotR, xOf(analysis.wyckoffRange.right)) - Math.max(plotL, xOf(analysis.wyckoffRange.left)))}
+              height={Math.max(1, yOf(analysis.wyckoffRange.low) - yOf(analysis.wyckoffRange.high))}
+              fill={analysis.wyckoffRange.dir === 1 ? "var(--color-bull)" : "var(--color-bear)"}
+              opacity={0.08}
+              stroke={analysis.wyckoffRange.dir === 1 ? "var(--color-bull)" : "var(--color-bear)"}
+              strokeOpacity={0.45}
+            />
+          ) : null}
+          {analysis.wyckoffEvents
+            .filter((event) => event.index >= startIndex && event.index <= endIndex)
+            .map((event) => {
+              const x = xOf(event.index);
+              const up = event.dir === 1;
+              const y = up ? yOf(event.price) + 12 : yOf(event.price) - 6;
+              return (
+                <text
+                  key={`${event.index}-${event.name}-${event.dir}`}
+                  x={x}
+                  y={y}
+                  textAnchor="middle"
+                  fill={up ? "var(--color-bull)" : "var(--color-bear)"}
+                  fontSize="10"
+                  fontFamily="IBM Plex Mono, ui-monospace, monospace"
+                >
+                  {event.name}
+                </text>
+              );
+            })}
           {markersHere.map((marker) => {
             const candle = candles[marker.index];
             const x = xOf(marker.index);
@@ -315,9 +370,25 @@ export function PriceChart({ resetKey, candles, analysis, trade, pinned, onPin }
                     fontSize="10"
                     fontFamily="IBM Plex Mono, ui-monospace, monospace"
                   >
-                    {marker.provisional ? "TẠM" : marker.side}
+                    {marker.provisional ? "TẠM" : marker.tag ?? marker.side}
                   </text>
                 ) : null}
+              </g>
+            );
+          })}
+          {[...exitMarks.values()].map(({ row, index, n }) => {
+            const candle = candles[index];
+            const x = xOf(index);
+            const price = row.status === "reverse" ? candle.close : (row.exit ?? candle.close);
+            const y = yOf(price);
+            const label = row.status === "tp" ? "TP" : row.status === "sl" ? "SL" : "Đảo";
+            const color = row.status === "tp" ? "var(--color-bull)" : row.status === "sl" ? "var(--color-bear)" : "var(--color-line)";
+            return (
+              <g key={`${index}-${row.status}-exit`}>
+                <rect x={x - 4} y={y - 4} width={8} height={8} fill="var(--color-bg)" stroke={color} transform={`rotate(45 ${x} ${y})`} />
+                <text x={x + 8} y={y + 3} fill={color} fontSize="10" fontFamily="IBM Plex Mono, ui-monospace, monospace">
+                  {n > 1 ? `${label}×${n}` : label}
+                </text>
               </g>
             );
           })}

@@ -1,0 +1,362 @@
+//@version=6
+// Wyckoff Schematic Auto Detect - rebuild
+//
+// 7-event state machine for Accumulation (SC, AR, ST, Spring, SOS, LPS, Markup)
+// and Distribution (BC, AR, ST, UT, SOW, LPSY, Markdown).
+//
+// Distribution runs on the SAME rules as Accumulation, applied to an inverted
+// "T-space": price * -1 and RSI -> 100 - RSI. One rule set, both directions.
+//
+// Settings and defaults mirror the original indicator's inputs.
+// The per-timeframe values that are NOT visible in the original settings
+// (Max TR width, pivot length, EMA lengths in Auto mode) are my own
+// calibration: see the "AUTO MODE MAPPING" block below.
+indicator("Wyckoff Schematic Auto Detect (Rebuild)", shorttitle="Wyckoff Rebuild", overlay=true, max_labels_count=500, max_boxes_count=200, max_bars_back=500)
+
+// =====================================================================
+// INPUTS
+// =====================================================================
+G_MODE = "⚡ OPERATION MODE"
+modeIn  = input.string("Auto", "Mode", options=["Auto", "Manual"], group=G_MODE)
+speedIn = input.string("Auto-TF", "Pivot Detection Speed", options=["Auto-TF", "Fast", "Normal", "Safe"], group=G_MODE)
+
+G_RSI = "🎯 RSI DETECTION"
+rsiLen = input.int(14, "RSI Length", minval=2, group=G_RSI)
+sens   = input.int(25, "Trend Sensitivity", minval=5, maxval=45, group=G_RSI, tooltip="Climax RSI level. SC needs RSI <= this value, BC needs RSI >= 100 - this value.")
+
+G_AUTO = "AUTO MODE VARIABLES"
+vmM30 = input.float(2.2, "Volume Mult (M1-M30)", step=0.1, group=G_AUTO)
+vmH1  = input.float(2.0, "Volume Mult (H1)", step=0.1, group=G_AUTO)
+vmH2  = input.float(1.8, "Volume Mult (H2)", step=0.1, group=G_AUTO)
+vmH4  = input.float(1.5, "Volume Mult (H4)", step=0.1, group=G_AUTO)
+vmD   = input.float(1.3, "Volume Mult (Daily+)", step=0.1, group=G_AUTO)
+
+G_MAN = "MANUAL OVERRIDE SETTINGS"
+mClimax = input.float(1.5, "Climax Volume ×", step=0.1, group=G_MAN)
+mVolLen = input.int(30, "Volume MA Length", minval=2, group=G_MAN)
+mAtrLen = input.int(14, "ATR Length", minval=1, group=G_MAN)
+mMaxTR  = input.int(250, "Max TR Width (bars)", minval=20, group=G_MAN)
+mEmaF   = input.int(50, "Fast EMA", minval=2, group=G_MAN)
+mEmaS   = input.int(200, "Slow EMA", minval=2, group=G_MAN)
+mPivLen = input.int(7, "Pivot Length", minval=2, group=G_MAN)
+
+G_DISP = "DISPLAY & FILTERS"
+minVol    = input.float(0.0, "Min Volume Filter", minval=0.0, group=G_DISP)
+showEma   = input.bool(true, "EMA Lines", group=G_DISP)
+showAcc   = input.bool(true, "Accumulation", group=G_DISP)
+showDist  = input.bool(true, "Distribution", group=G_DISP)
+showBox   = input.bool(true, "Trading Range Box", group=G_DISP)
+showDash  = input.bool(true, "Dashboard", group=G_DISP)
+showOther = input.bool(true, "Other Pivots (orange)", group=G_DISP)
+showLbl   = input.bool(true, "Wyckoff Labels (SC/AR/ST...)", group=G_DISP)
+showBar   = input.bool(true, "Bar Coloring", group=G_DISP)
+
+G_STR = "STRUCTURE (extra)"
+reqPhaseC = input.bool(true, "Require Spring / UT before SOS / SOW", group=G_STR, tooltip="Off = SOS / SOW may follow ST directly (schematic without a Phase C shakeout).")
+
+// =====================================================================
+// AUTO MODE MAPPING (by chart timeframe)
+// =====================================================================
+tfs    = timeframe.in_seconds(timeframe.period)
+isAuto = modeIn == "Auto"
+
+autoVol     = tfs <= 1800 ? vmM30 : tfs <= 3600 ? vmH1 : tfs <= 7200 ? vmH2 : tfs <= 14400 ? vmH4 : vmD
+autoPivBase = tfs <= 300 ? 8 : tfs <= 1800 ? 7 : tfs <= 7200 ? 6 : tfs <= 14400 ? 5 : 4
+autoMaxTR   = tfs <= 1800 ? 250 : tfs <= 3600 ? 200 : tfs <= 7200 ? 150 : tfs <= 14400 ? 120 : 100
+autoEmaF    = tfs >= 86400 ? 20 : 50
+autoEmaS    = tfs >= 86400 ? 50 : 200
+
+climaxMult = isAuto ? autoVol : mClimax
+volLen     = isAuto ? 30 : mVolLen
+atrLen     = isAuto ? 14 : mAtrLen
+maxTR      = isAuto ? autoMaxTR : mMaxTR
+emaFLen    = isAuto ? autoEmaF : mEmaF
+emaSLen    = isAuto ? autoEmaS : mEmaS
+pivBase    = isAuto ? autoPivBase : mPivLen
+
+spdMult = speedIn == "Fast" ? 0.6 : speedIn == "Safe" ? 1.5 : 1.0
+pivLen  = math.max(2, int(math.round(pivBase * spdMult)))
+
+// fixed structure constants
+arAtr = 2.0   // AR / rally must be at least this many ATR away from the climax
+
+// =====================================================================
+// INDICATORS
+// =====================================================================
+rsiV   = ta.rsi(close, rsiLen)
+volMaV = ta.sma(volume, volLen)
+atrV   = ta.atr(atrLen)
+emaF   = ta.ema(close, emaFLen)
+emaS   = ta.ema(close, emaSLen)
+
+ph = ta.pivothigh(high, pivLen, pivLen)
+pl = ta.pivotlow(low, pivLen, pivLen)
+
+// values at the pivot bar (the pivot is confirmed pivLen bars later)
+pvBar   = bar_index - pivLen
+closePv = close[pivLen]
+closeNx = close[pivLen - 1]
+emaPv   = emaF[pivLen]
+volPv   = volume[pivLen]
+volMaPv = volMaV[pivLen]
+atrPv   = atrV[pivLen]
+volMax3 = ta.highest(volume, 3)[pivLen - 1]   // peak volume on pivot bar +/- 1
+rsiMin3 = ta.lowest(rsiV, 3)[pivLen - 1]
+rsiMax3 = ta.highest(rsiV, 3)[pivLen - 1]
+
+// =====================================================================
+// PATTERN OBJECT
+// =====================================================================
+type Pat
+    int d = 1            // +1 accumulation, -1 distribution
+    int st = 0           // 0 idle, 1 climax, 2 AR, 3 ST, 4 Spring/UT, 5 SOS/SOW, 6 LPS/LPSY, 7 Markup/Markdown
+    int cBar
+    float cP             // climax extreme (T-space)
+    float cVol
+    float cRsi
+    float rLow           // range low (T-space)
+    float rHigh          // range high (T-space)
+    float spP
+    int sosBar
+    float sosPeak
+    float sosVol
+    float lpsP
+    box rb
+    array<label> lbls
+
+var Pat pAcc  = Pat.new(1)
+var Pat pDist = Pat.new(-1)
+if barstate.isfirst
+    pAcc.lbls  := array.new<label>()
+    pDist.lbls := array.new<label>()
+
+// =====================================================================
+// HELPERS
+// =====================================================================
+f_reset(Pat p, bool clean) =>
+    if clean
+        for l in p.lbls
+            label.delete(l)
+        if not na(p.rb)
+            box.delete(p.rb)
+    array.clear(p.lbls)
+    p.st := 0
+    p.cBar := na
+    p.cP := na
+    p.cVol := na
+    p.cRsi := na
+    p.rLow := na
+    p.rHigh := na
+    p.spP := na
+    p.sosBar := na
+    p.sosPeak := na
+    p.sosVol := na
+    p.lpsP := na
+    p.rb := na
+    true
+
+// priceT is in T-space; atLowT = event sits at the T-space low side
+f_lbl(Pat p, int bar, float priceT, string txt, bool atLowT, color col) =>
+    bool below = (p.d == 1) == atLowT
+    label l = label.new(bar, p.d * priceT, txt, xloc.bar_index, yloc.price, col, below ? label.style_label_up : label.style_label_down, color.white, size.small)
+    array.push(p.lbls, l)
+
+f_step(Pat p, Pat o, bool en, float extP, float oppP, float cT, float hiT, float emaT, float rsiExtT, float closePvT, float closeNxT, float emaPvT) =>
+    bool usedExt = false
+    bool usedOpp = false
+    if en and barstate.isconfirmed
+        bool isAcc = p.d == 1
+        string nClimax = isAcc ? "SC" : "BC"
+        string nPhC = isAcc ? "Spring" : "UT"
+        string nSos = isAcc ? "SOS" : "SOW"
+        string nLps = isAcc ? "LPS" : "LPSY"
+        string nMk = isAcc ? "Markup ▲" : "Markdown ▼"
+        color cMain = isAcc ? color.new(color.green, 0) : color.new(color.red, 0)
+        color cPhC = color.new(color.purple, 0)
+
+        // 1) failures and time-out of an unfinished structure
+        if p.st > 0 and p.st < 7
+            bool failed = bar_index - p.cBar > maxTR
+            if p.st == 2 or p.st == 3
+                failed := failed or cT < p.rLow - 2.0 * atrV
+            else if p.st == 4
+                failed := failed or cT < p.spP - 0.5 * atrV
+            else if p.st == 5
+                failed := failed or cT < p.rLow
+            else if p.st == 6
+                failed := failed or cT < p.lpsP - atrV
+            if failed
+                f_reset(p, true)
+
+        // Phase E ends when price loses the fast EMA: cycle complete, drawings stay
+        if p.st == 7 and cT < emaT
+            f_reset(p, false)
+
+        // 2) transitions driven by confirmed pivots
+        if p.st == 1
+            if not na(extP) and extP < p.cP
+                // lower extreme than the climax: that climax was not the end
+                f_reset(p, true)
+            else if not na(oppP) and oppP - p.cP >= arAtr * atrPv
+                p.st := 2
+                p.rHigh := oppP
+                usedOpp := true
+                if showLbl
+                    f_lbl(p, pvBar, oppP, "AR", false, cMain)
+                if showBox
+                    p.rb := box.new(left=p.cBar, top=(isAcc ? p.rHigh : -p.rLow), right=bar_index, bottom=(isAcc ? p.rLow : -p.rHigh), border_color=cMain, bgcolor=color.new(cMain, 88))
+        else if p.st == 2
+            if not na(oppP) and oppP > p.rHigh
+                p.rHigh := oppP
+            if not na(extP)
+                if extP < p.cP - 0.5 * atrPv
+                    f_reset(p, true)
+                else if extP <= p.rLow + 0.5 * (p.rHigh - p.rLow) and (volMax3 < p.cVol or rsiExtT > p.cRsi)
+                    // hybrid ST: lower volume OR higher RSI than at the climax
+                    p.st := 3
+                    p.rLow := math.min(p.rLow, extP)
+                    usedExt := true
+                    if showLbl
+                        f_lbl(p, pvBar, extP, "ST", true, cMain)
+        else if p.st == 3
+            if not na(extP) and extP < p.rLow
+                bool recovered = closePvT > p.rLow or closeNxT > p.rLow
+                if extP >= p.rLow - 1.5 * atrPv and recovered
+                    p.st := 4
+                    p.spP := extP
+                    usedExt := true
+                    if showLbl
+                        f_lbl(p, pvBar, extP, nPhC, true, cPhC)
+                else
+                    f_reset(p, true)
+
+        // 3) SOS / SOW: close beyond the range edge with volume above average
+        if (p.st == 4 or (p.st == 3 and not reqPhaseC)) and cT > p.rHigh and volume >= volMaV and cT > emaT
+            p.st := 5
+            p.sosBar := bar_index
+            p.sosPeak := hiT
+            p.sosVol := volume
+            if showLbl
+                f_lbl(p, bar_index, hiT, nSos, false, cMain)
+
+        // 4) LPS / LPSY pullback, then Markup / Markdown
+        if p.st == 5
+            if not na(extP) and pvBar > p.sosBar and extP > p.rLow + 0.5 * (p.rHigh - p.rLow) and extP < p.sosPeak - 0.5 * atrPv and volPv < p.sosVol
+                p.st := 6
+                p.lpsP := extP
+                usedExt := true
+                if showLbl
+                    f_lbl(p, pvBar, extP, nLps, true, cMain)
+        else if p.st == 6
+            if cT > p.sosPeak and cT > emaT
+                p.st := 7
+                if showLbl
+                    f_lbl(p, bar_index, hiT, nMk, false, cMain)
+                if not na(p.rb)
+                    box.set_right(p.rb, bar_index)
+        if p.st == 5 or p.st == 6
+            p.sosPeak := math.max(p.sosPeak, hiT)
+
+        // 5) keep the trading range box in sync
+        if p.st >= 2 and p.st <= 6 and not na(p.rb)
+            box.set_right(p.rb, bar_index)
+            box.set_top(p.rb, isAcc ? p.rHigh : -p.rLow)
+            box.set_bottom(p.rb, isAcc ? p.rLow : -p.rHigh)
+
+        // 6) climax: start a new structure
+        if p.st == 0 and not na(extP) and volMax3 >= volMaPv * climaxMult and rsiExtT <= sens and closePvT < emaPvT and volPv >= minVol
+            bool blocked = false
+            if o.st >= 3 and o.st <= 6
+                blocked := true
+            else if o.st == 7
+                f_reset(o, false)
+            else if o.st > 0
+                f_reset(o, true)
+            if not blocked
+                p.st := 1
+                p.cBar := pvBar
+                p.cP := extP
+                p.cVol := volMax3
+                p.cRsi := rsiExtT
+                p.rLow := extP
+                usedExt := true
+                if showLbl
+                    f_lbl(p, pvBar, extP, nClimax, true, cMain)
+    [usedExt, usedOpp]
+
+f_phaseTxt(Pat p) =>
+    string s = "-"
+    if p.st > 0
+        bool a = p.d == 1
+        string z = switch p.st
+            1 => "A (" + (a ? "SC" : "BC") + ")"
+            2 => "A (AR)"
+            3 => "B (ST)"
+            4 => "C (" + (a ? "Spring" : "UT") + ")"
+            5 => "D (" + (a ? "SOS" : "SOW") + ")"
+            6 => "D (" + (a ? "LPS" : "LPSY") + ")"
+            => "E (" + (a ? "Markup" : "Markdown") + ")"
+        s := (a ? "ACC" : "DIST") + " Phase " + z
+    s
+
+// =====================================================================
+// RUN BOTH DIRECTIONS
+// =====================================================================
+// Accumulation: normal space.  Distribution: inverted T-space.
+[aUsedExt, aUsedOpp] = f_step(pAcc, pDist, showAcc, pl, ph, close, high, emaF, rsiMin3, closePv, closeNx, emaPv)
+[dUsedExt, dUsedOpp] = f_step(pDist, pAcc, showDist, -ph, -pl, -close, -low, -emaF, 100 - rsiMax3, -closePv, -closeNx, -emaPv)
+
+// =====================================================================
+// PLOTS
+// =====================================================================
+// Style mirrors the original's Style tab: Fast EMA teal and Slow EMA red (both 50% transparent, width 1),
+// orange triangles for pivots, bar colors lime (Accumulation) and purple (Distribution).
+plot(showEma ? emaF : na, "Fast EMA", color.new(color.teal, 50), 1)
+plot(showEma ? emaS : na, "Slow EMA", color.new(color.red, 50), 1)
+
+plotshape(showOther and not na(pl) and not (aUsedExt or dUsedOpp), "Pivot Low", shape.triangleup, location.belowbar, color.orange, offset=-pivLen, size=size.tiny)
+plotshape(showOther and not na(ph) and not (aUsedOpp or dUsedExt), "Pivot High", shape.triangledown, location.abovebar, color.orange, offset=-pivLen, size=size.tiny)
+
+color barC = na
+if showBar
+    barC := pAcc.st > 0 ? color.lime : pDist.st > 0 ? color.purple : na
+barcolor(barC)
+
+// =====================================================================
+// DASHBOARD
+// =====================================================================
+var table dash = showDash ? table.new(position.top_right, 2, 5, bgcolor=color.new(color.black, 15), frame_color=color.gray, frame_width=1, border_width=1) : na
+
+if showDash and barstate.islast
+    string structTxt = pAcc.st > 0 ? f_phaseTxt(pAcc) : pDist.st > 0 ? f_phaseTxt(pDist) : "No active structure"
+    color structCol = pAcc.st > 0 ? color.lime : pDist.st > 0 ? color.red : color.gray
+    string rsiTxt = str.tostring(rsiV, "#.0") + (rsiV <= sens ? "  Oversold" : rsiV >= 100 - sens ? "  Overbought" : "  Neutral")
+    float vr = volume / volMaV
+    string volTxt = str.tostring(vr, "#.0") + "x  " + (vr >= climaxMult ? "CLIMAX" : vr >= 1.2 ? "High" : vr < 0.7 ? "Low" : "Normal")
+    string trendTxt = emaF > emaS ? "Bullish (EMA)" : "Bearish (EMA)"
+    string cfgTxt = modeIn + " | pivot " + str.tostring(pivLen) + " | vol× " + str.tostring(climaxMult, "#.0#")
+
+    table.cell(dash, 0, 0, "Structure", text_color=color.white, text_halign=text.align_left, text_size=size.small)
+    table.cell(dash, 1, 0, structTxt, text_color=structCol, text_halign=text.align_left, text_size=size.small)
+    table.cell(dash, 0, 1, "RSI", text_color=color.white, text_halign=text.align_left, text_size=size.small)
+    table.cell(dash, 1, 1, rsiTxt, text_color=color.white, text_halign=text.align_left, text_size=size.small)
+    table.cell(dash, 0, 2, "Volume", text_color=color.white, text_halign=text.align_left, text_size=size.small)
+    table.cell(dash, 1, 2, volTxt, text_color=color.white, text_halign=text.align_left, text_size=size.small)
+    table.cell(dash, 0, 3, "Trend", text_color=color.white, text_halign=text.align_left, text_size=size.small)
+    table.cell(dash, 1, 3, trendTxt, text_color=emaF > emaS ? color.lime : color.red, text_halign=text.align_left, text_size=size.small)
+    table.cell(dash, 0, 4, "Config", text_color=color.white, text_halign=text.align_left, text_size=size.small)
+    table.cell(dash, 1, 4, cfgTxt, text_color=color.gray, text_halign=text.align_left, text_size=size.small)
+
+// =====================================================================
+// ALERTS
+// =====================================================================
+accSt  = pAcc.st
+distSt = pDist.st
+alertcondition(accSt == 4 and accSt[1] != 4, "Spring", "Wyckoff: Spring detected")
+alertcondition(accSt == 5 and accSt[1] != 5, "SOS", "Wyckoff: Sign of Strength")
+alertcondition(accSt == 6 and accSt[1] != 6, "LPS", "Wyckoff: Last Point of Support")
+alertcondition(accSt == 7 and accSt[1] != 7, "Markup", "Wyckoff: Markup (Phase E)")
+alertcondition(distSt == 4 and distSt[1] != 4, "UT", "Wyckoff: Upthrust detected")
+alertcondition(distSt == 5 and distSt[1] != 5, "SOW", "Wyckoff: Sign of Weakness")
+alertcondition(distSt == 6 and distSt[1] != 6, "LPSY", "Wyckoff: Last Point of Supply")
+alertcondition(distSt == 7 and distSt[1] != 7, "Markdown", "Wyckoff: Markdown (Phase E)")

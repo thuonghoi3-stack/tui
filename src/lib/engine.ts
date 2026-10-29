@@ -1,3 +1,5 @@
+import { scanWyckoff, wyckoffSide, type WyckoffEvent, type WyckoffRange } from "./wyckoff.ts";
+
 export const INTERVALS = ["5m", "15m", "30m", "1h", "4h"] as const;
 export type Interval = (typeof INTERVALS)[number];
 
@@ -39,18 +41,20 @@ export type Params = {
   bearMax: number;
   requireSession: boolean;
   requireWhale: boolean;
+  requireWyckoff: boolean;
   requireSma: boolean;
+  requireCorrection: boolean;
 };
 
 export const defaultParams: Params = {
   utKey: 1,
   atrPeriod: 14,
   smaLen: 15,
-  smaDist: 0.1,
+  smaDist: 1,
   smaLook: 2,
   useExtreme: true,
-  slPct: 6,
-  tpPct: 3.2,
+  slPct: 12,
+  tpPct: 12,
   whaleLookback: 200,
   whaleBins: 32,
   strengthPct: 97,
@@ -58,8 +62,10 @@ export const defaultParams: Params = {
   bullMin: 52,
   bearMax: 48,
   requireSession: true,
-  requireWhale: true,
-  requireSma: false,
+  requireWhale: false,
+  requireWyckoff: true,
+  requireSma: true,
+  requireCorrection: true,
 };
 
 export function clampParams(p: Params): Params {
@@ -81,7 +87,9 @@ export function clampParams(p: Params): Params {
     bearMax: num(p.bearMax, 30, 50),
     requireSession: Boolean(p.requireSession),
     requireWhale: Boolean(p.requireWhale),
+    requireWyckoff: p.requireWyckoff === undefined ? true : Boolean(p.requireWyckoff),
     requireSma: Boolean(p.requireSma),
+    requireCorrection: p.requireCorrection === undefined ? true : Boolean(p.requireCorrection),
   };
 }
 
@@ -174,13 +182,22 @@ export type Marker = {
   smaOk: boolean;
   sessionOk: boolean;
   whaleOk: boolean;
+  wyckoffOk: boolean;
   sessionRaw: boolean;
   whaleRaw: boolean;
+  wyckoffRaw: boolean;
+  correctionOk: boolean;
+  correctionRaw: boolean;
   smaText: string;
   sessionText: string;
   whaleText: string;
+  wyckoffText: string;
+  correctionText: string;
   sessionRawText: string;
   whaleRawText: string;
+  wyckoffRawText: string;
+  correctionRawText: string;
+  tag?: string;
 };
 
 export type Check = { label: string; state: CheckState; text: string };
@@ -214,6 +231,8 @@ export type Analysis = {
   lastConfirmed: { side: Side; time: number } | null;
   sessionsNow: string[];
   overlap: boolean;
+  wyckoffEvents: WyckoffEvent[];
+  wyckoffRange: WyckoffRange | null;
 };
 
 export type Paper = {
@@ -226,11 +245,12 @@ export type Paper = {
   entry: number;
   sl: number;
   tp: number;
-  status: "open" | "tp" | "sl";
+  status: "open" | "tp" | "sl" | "reverse";
   exit?: number;
   exitTime?: number;
   sessionNote?: string;
   whaleNote?: string;
+  wyckoffNote?: string;
 };
 
 type Acc = { bars: number; range: number; vol: number; drift: number; up: number; dir: number };
@@ -597,12 +617,14 @@ function gatesOpen(m: Marker, params: Params): boolean {
   if (!m.smaOk) return false;
   if (params.requireSession && !m.sessionRaw) return false;
   if (params.requireWhale && !m.whaleRaw) return false;
+  if (params.requireWyckoff && !m.wyckoffRaw) return false;
+  if (params.requireCorrection && !m.correctionRaw) return false;
   return true;
 }
 
 export function focusOfMarker(m: Marker, candles: Candle[], params: Params): FocusView {
   const bookable = gatesOpen(m, params);
-  const asked = [params.requireSession ? "phiên" : "", params.requireWhale ? "cá voi" : ""].filter(Boolean);
+  const asked = [params.requireWyckoff ? "wyckoff" : "", params.requireSession ? "phiên" : "", params.requireWhale ? "cá voi" : ""].filter(Boolean);
   const headline = bookable ? (m.provisional ? `TẠM ${m.side}` : m.side) : m.smaOk ? "CHỜ" : "LỌC";
   const kicker = bookable
     ? m.provisional
@@ -633,7 +655,7 @@ export function focusOfMarker(m: Marker, candles: Candle[], params: Params): Foc
       ? "Sẽ vào sổ khi nến đóng nếu các cổng đang bật còn đúng."
       : "Đủ điều kiện vào sổ giấy."
     : m.smaOk
-      ? "Chưa phải lệnh. Bật phiên hoặc cá voi thì phải xác nhận đúng phía."
+      ? "Chưa phải lệnh. Cổng đang bật chưa xác nhận."
       : "Bỏ qua. Giá chưa từng cách SMA đủ trong cửa sổ nhìn lại.";
   return {
     headline,
@@ -645,6 +667,11 @@ export function focusOfMarker(m: Marker, candles: Candle[], params: Params): Foc
     checks: [
       { label: "UT + SMA", state: m.smaOk ? "pass" : "fail", text: m.smaText },
       {
+        label: "Wyckoff",
+        state: params.requireWyckoff ? (m.wyckoffRaw ? "pass" : "fail") : "pass",
+        text: params.requireWyckoff ? m.wyckoffRawText : `Đã tắt lọc Wyckoff. ${m.wyckoffRawText}`,
+      },
+      {
         label: "Phiên",
         state: params.requireSession ? (m.sessionRaw ? "pass" : "fail") : "pass",
         text: params.requireSession ? m.sessionRawText : `Đã tắt lọc phiên. ${m.sessionRawText}`,
@@ -653,6 +680,11 @@ export function focusOfMarker(m: Marker, candles: Candle[], params: Params): Foc
         label: "Cá voi",
         state: params.requireWhale ? (m.whaleRaw ? "pass" : "fail") : "pass",
         text: params.requireWhale ? m.whaleRawText : `Đã tắt lọc cá voi. ${m.whaleRawText}`,
+      },
+      {
+        label: "Điều chỉnh",
+        state: params.requireCorrection ? (m.correctionRaw ? "pass" : "fail") : "pass",
+        text: params.requireCorrection ? m.correctionRawText : `Đã tắt lọc điều chỉnh. ${m.correctionRawText}`,
       },
     ],
     entry: levels?.entry ?? null,
@@ -680,7 +712,48 @@ function emptyFocus(text: string): FocusView {
   };
 }
 
-export function analyze(candles: Candle[], rawParams: Params): Analysis {
+function correctionPivots(candles: Candle[], interval: Interval) {
+  const len = interval === "4h" ? 3 : interval === "1h" ? 4 : 5;
+  const out: { i: number; confirm: number; kind: "H" | "L"; price: number }[] = [];
+  for (let i = len; i < candles.length - len; i += 1) {
+    let isH = true;
+    let isL = true;
+    for (let k = i - len; k <= i + len; k += 1) {
+      if (k === i) continue;
+      if (candles[k].high >= candles[i].high) isH = false;
+      if (candles[k].low <= candles[i].low) isL = false;
+    }
+    if (isH) out.push({ i, confirm: i + len, kind: "H", price: candles[i].high });
+    if (isL) out.push({ i, confirm: i + len, kind: "L", price: candles[i].low });
+  }
+  return out;
+}
+
+function correctionAt(candles: Candle[], index: number, side: Side, pivots: ReturnType<typeof correctionPivots>) {
+  const known: typeof pivots = [];
+  for (const pivot of pivots) {
+    if (pivot.confirm > index) break;
+    const prev = known[known.length - 1];
+    if (prev && prev.kind === pivot.kind) {
+      if (pivot.kind === "H" ? pivot.price >= prev.price : pivot.price <= prev.price) known[known.length - 1] = pivot;
+    } else known.push(pivot);
+  }
+  if (known.length < 2) return { ok: true, text: "Chưa đủ hai sóng để gọi là điều chỉnh giả." };
+  const last = known[known.length - 1];
+  const prev = known[known.length - 2];
+  const span = last.price - prev.price;
+  if (span === 0) return { ok: true, text: "Sóng phẳng, không chặn." };
+  const retrace = (last.price - candles[index].close) / span;
+  const pct = `${Math.round(retrace * 100)}%`;
+  const withCorrection = (last.kind === "L" && side === "LONG") || (last.kind === "H" && side === "SHORT");
+  const bars = index - last.i;
+  if (!withCorrection) return { ok: true, text: `Thuận sóng trước. Giá đã hồi ${pct}.` };
+  if (retrace < 0.25) return { ok: false, text: `Điều chỉnh giả. Mới hồi ${pct}, chưa tới 25% sóng.` };
+  if (bars >= 11) return { ok: false, text: `Điều chỉnh giả. Cú hồi đã ${bars} nến, quá 10 nến.` };
+  return { ok: true, text: `Điều chỉnh giữa nhịp. Hồi ${pct} sau ${bars} nến.` };
+}
+
+export function analyze(candles: Candle[], rawParams: Params, interval: Interval = "5m"): Analysis {
   const params = clampParams(rawParams);
   const n = candles.length;
   const stops = candles.map(() => Number.NaN);
@@ -760,7 +833,11 @@ export function analyze(candles: Candle[], rawParams: Params): Analysis {
     };
   };
 
-  const pushMarker = (index: number, side: Side, provisional: boolean) => {
+  const wyckoff = scanWyckoff(candles, interval);
+  const wyckoffAt = (index: number, side: Side) => wyckoffSide(wyckoff.acc[index] ?? 0, wyckoff.dist[index] ?? 0, side);
+  const corrPivots = correctionPivots(candles, interval);
+
+  const pushMarker = (index: number, side: Side, provisional: boolean, tag?: string) => {
     const stats = summarizeHours(hourPref[index], params.sessionMinBars);
     const lowExt = windowExtreme(devLow, index, need, "min");
     const highExt = windowExtreme(devHigh, index, need, "max");
@@ -780,8 +857,18 @@ export function analyze(candles: Candle[], rawParams: Params): Analysis {
     const whaleOk = params.requireWhale ? whaleRaw : true;
     const whaleRawText = whaleEval.text;
     const whaleText = params.requireWhale ? whaleRawText : `Đã tắt lọc cá voi trên biểu đồ. ${whaleRawText}`;
+    const wyckoffEval = wyckoffAt(index, side);
+    const wyckoffRaw = wyckoffEval.ok;
+    const wyckoffOk = params.requireWyckoff ? wyckoffRaw : true;
+    const wyckoffRawText = wyckoffEval.text;
+    const wyckoffText = params.requireWyckoff ? wyckoffRawText : `Đã tắt lọc Wyckoff trên biểu đồ. ${wyckoffRawText}`;
+    const correctionEval = correctionAt(candles, index, side, corrPivots);
+    const correctionRaw = correctionEval.ok;
+    const correctionOk = params.requireCorrection ? correctionRaw : true;
+    const correctionRawText = correctionEval.text;
+    const correctionText = params.requireCorrection ? correctionRawText : `Đã tắt lọc điều chỉnh. ${correctionRawText}`;
     let tier: Tier = "filtered";
-    if (smaOk && sessionOk && whaleOk) tier = "confirmed";
+    if (smaOk && sessionOk && whaleOk && wyckoffOk && correctionOk) tier = "confirmed";
     else if (smaOk) tier = "partial";
     markers.push({
       index,
@@ -791,13 +878,22 @@ export function analyze(candles: Candle[], rawParams: Params): Analysis {
       smaOk,
       sessionOk,
       whaleOk,
+      wyckoffOk,
+      correctionOk,
       sessionRaw,
       whaleRaw,
+      wyckoffRaw,
+      correctionRaw,
       smaText,
       sessionText,
       whaleText,
+      wyckoffText,
+      correctionText,
       sessionRawText: sessionEval.text,
       whaleRawText,
+      wyckoffRawText,
+      correctionRawText,
+      tag,
     });
   };
 
@@ -806,6 +902,18 @@ export function analyze(candles: Candle[], rawParams: Params): Analysis {
     if (buy[i]) pushMarker(i, "LONG", provisional);
     else if (sell[i]) pushMarker(i, "SHORT", provisional);
   }
+
+  for (const event of wyckoff.history) {
+    if (event.name !== "Spring" && event.name !== "UT") continue;
+    const side: Side = event.name === "Spring" ? "LONG" : "SHORT";
+    const at = event.confirmed;
+    if (at <= 0 || at >= n - 1) continue;
+    const tag = event.name === "Spring" ? "Spring" : "Upthrust";
+    const same = markers.find((marker) => marker.index === at && marker.side === side);
+    if (same) same.tag = tag;
+    else pushMarker(at, side, false, tag);
+  }
+  markers.sort((a, b) => a.index - b.index);
 
   const counts = { confirmedLong: 0, confirmedShort: 0, partial: 0, filtered: 0 };
   let lastConfirmed: Analysis["lastConfirmed"] = null;
@@ -848,7 +956,13 @@ export function analyze(candles: Candle[], rawParams: Params): Analysis {
       const smaRaw = next === "LONG" ? lowExt != null && lowExt <= -params.smaDist : highExt != null && highExt >= params.smaDist;
       const dist = (candles[last].close / smaLine[last] - 1) * 100;
       const distTxt = `${dist >= 0 ? "+" : ""}${dist.toFixed(2)}%`;
-      const gates = (!params.requireSession || sessionEval.ok) && (!params.requireWhale || whaleEval.ok);
+      const wyckoffEval = wyckoffAt(last, next);
+      const correctionEval = correctionAt(candles, last, next, corrPivots);
+      const gates =
+        (!params.requireSession || sessionEval.ok) &&
+        (!params.requireWhale || whaleEval.ok) &&
+        (!params.requireWyckoff || wyckoffEval.ok) &&
+        (!params.requireCorrection || correctionEval.ok);
       const smaLineText = params.requireSma
         ? smaRaw
           ? `Điều kiện SMA cho ${next} đã có trong ${need} nến.`
@@ -861,7 +975,9 @@ export function analyze(candles: Candle[], rawParams: Params): Analysis {
         sub: `Lệnh kế tiếp là ${next}. ${
           params.requireSma ? (smaRaw ? "Khoảng cách SMA đã đủ." : "Khoảng cách SMA chưa đủ.") : "Đã tắt lọc cách SMA."
         } ${
-          gates ? "Phiên và cá voi đang xác nhận phía đó — vẫn chưa vào sổ vì chưa có đảo UT." : "Chưa vào sổ: phiên hoặc cá voi chưa xác nhận phía đó."
+          gates
+            ? "Các cổng đang bật không chặn phía đó — vẫn chưa vào sổ vì chưa có đảo UT."
+            : "Chưa vào sổ: Wyckoff, phiên, cá voi hoặc điều chỉnh chưa cho phía đó."
         }`,
         time: candles[last].time,
         side: next,
@@ -872,6 +988,11 @@ export function analyze(candles: Candle[], rawParams: Params): Analysis {
             text: `Chưa đảo chiều. Giá cách SMA ${distTxt}, dải ±${params.smaDist}%. ${smaLineText}`,
           },
           {
+            label: "Wyckoff",
+            state: params.requireWyckoff ? (wyckoffEval.ok ? "pass" : "fail") : "pass",
+            text: params.requireWyckoff ? wyckoffEval.text : `Đã tắt lọc Wyckoff. ${wyckoffEval.text}`,
+          },
+          {
             label: "Phiên",
             state: params.requireSession ? (sessionEval.ok ? "pass" : "fail") : "pass",
             text: params.requireSession ? sessionEval.text : `Đã tắt lọc phiên. ${sessionEval.text}`,
@@ -880,6 +1001,11 @@ export function analyze(candles: Candle[], rawParams: Params): Analysis {
             label: "Cá voi",
             state: params.requireWhale ? (whaleEval.ok ? "pass" : "fail") : "pass",
             text: params.requireWhale ? whaleEval.text : `Đã tắt lọc cá voi. ${whaleEval.text}`,
+          },
+          {
+            label: "Điều chỉnh",
+            state: params.requireCorrection ? (correctionEval.ok ? "pass" : "fail") : "pass",
+            text: params.requireCorrection ? correctionEval.text : `Đã tắt lọc điều chỉnh. ${correctionEval.text}`,
           },
         ],
         entry: null,
@@ -905,6 +1031,8 @@ export function analyze(candles: Candle[], rawParams: Params): Analysis {
     lastConfirmed,
     sessionsNow,
     overlap,
+    wyckoffEvents: wyckoff.events,
+    wyckoffRange: wyckoff.range,
   };
 }
 
@@ -919,12 +1047,18 @@ export function changePct(candles: Candle[], interval: Interval): number {
 
 export function papersFrom(symbol: string, interval: Interval, candles: Candle[], analysis: Analysis, params: Params): Paper[] {
   const out: Paper[] = [];
-  for (const m of analysis.markers) {
-    if (m.provisional || !gatesOpen(m, params)) continue;
+  const flipAt = new Map<number, Side>();
+  for (const marker of analysis.markers) {
+    if (marker.provisional || !gatesOpen(marker, params)) continue;
+    flipAt.set(marker.index, marker.side);
+  }
+  const signals = analysis.markers.filter((marker) => !marker.provisional && gatesOpen(marker, params)).sort((a, b) => a.index - b.index);
+  let busyUntil = -1;
+  for (const m of signals) {
     const signal = candles[m.index];
     if (!signal) continue;
     const entryIndex = m.index + 1;
-    if (entryIndex >= candles.length) continue;
+    if (entryIndex >= candles.length || entryIndex <= busyUntil) continue;
     const entry = candles[entryIndex].open;
     const entryTime = candles[entryIndex].time;
     if (!(entry > 0)) continue;
@@ -932,6 +1066,7 @@ export function papersFrom(symbol: string, interval: Interval, candles: Candle[]
     let status: Paper["status"] = "open";
     let exit: number | undefined;
     let exitTime: number | undefined;
+    let exitIndex = candles.length;
     for (let i = entryIndex; i < candles.length; i += 1) {
       const c = candles[i];
       if (m.side === "LONG") {
@@ -939,12 +1074,14 @@ export function papersFrom(symbol: string, interval: Interval, candles: Candle[]
           status = "sl";
           exit = levels.sl;
           exitTime = c.time;
+          exitIndex = i;
           break;
         }
         if (c.high >= levels.tp) {
           status = "tp";
           exit = levels.tp;
           exitTime = c.time;
+          exitIndex = i;
           break;
         }
       } else {
@@ -952,16 +1089,31 @@ export function papersFrom(symbol: string, interval: Interval, candles: Candle[]
           status = "sl";
           exit = levels.sl;
           exitTime = c.time;
+          exitIndex = i;
           break;
         }
         if (c.low <= levels.tp) {
           status = "tp";
           exit = levels.tp;
           exitTime = c.time;
+          exitIndex = i;
+          break;
+        }
+      }
+      const flip = flipAt.get(i);
+      if (flip && flip !== m.side) {
+        const fill = candles[i + 1];
+        const px = fill && fill.open > 0 ? fill.open : c.close;
+        if (px > 0) {
+          status = "reverse";
+          exit = px;
+          exitTime = c.time;
+          exitIndex = i;
           break;
         }
       }
     }
+    busyUntil = exitIndex;
     const names = sessionsAt(signal.time);
     out.push({
       id: `${symbol}|${interval}|${signal.time}|${m.side}`,
@@ -978,6 +1130,7 @@ export function papersFrom(symbol: string, interval: Interval, candles: Candle[]
       exitTime,
       sessionNote: names.length ? `${names.join(" · ")} · ${m.sessionRawText}` : m.sessionRawText,
       whaleNote: m.whaleRawText,
+      wyckoffNote: m.wyckoffRawText,
     });
   }
   return out;
@@ -992,7 +1145,7 @@ export function mergeJournal(prev: Paper[], fresh: Paper[], covered: string[] = 
     map.set(p.id, p);
   }
   for (const p of fresh) map.set(p.id, p);
-  return [...map.values()].sort((a, b) => b.signalTime - a.signalTime).slice(0, 80);
+  return [...map.values()].sort((a, b) => b.signalTime - a.signalTime).slice(0, 4000);
 }
 
 export function pnlPct(p: Paper, mark?: number): number {

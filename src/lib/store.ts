@@ -26,6 +26,21 @@ type DeskState = {
   clearJournal: () => void;
 };
 
+const DEFAULT_SYMBOLS = [
+  "BTCUSDT",
+  "ETHUSDT",
+  "SOLUSDT",
+  "BNBUSDT",
+  "XRPUSDT",
+  "DOGEUSDT",
+  "ADAUSDT",
+  "AVAXUSDT",
+  "LINKUSDT",
+  "LTCUSDT",
+];
+
+export const MAX_SYMBOLS = 40;
+
 const memory = new Map<string, string>();
 const memoryStorage = {
   getItem: (key: string) => memory.get(key) ?? null,
@@ -61,7 +76,7 @@ function deskStorage() {
 export const useDesk = create<DeskState>()(
   persist(
     (set, get) => ({
-      symbols: ["BTCUSDT", "ETHUSDT", "SOLUSDT", "BNBUSDT", "XRPUSDT"],
+      symbols: DEFAULT_SYMBOLS,
       active: "BTCUSDT",
       interval: "5m",
       params: defaultParams,
@@ -77,7 +92,7 @@ export const useDesk = create<DeskState>()(
           set({ active: symbol });
           return null;
         }
-        if (symbols.length >= 8) return "Tối đa 8 cặp trên bàn.";
+        if (symbols.length >= MAX_SYMBOLS) return `Tối đa ${MAX_SYMBOLS} cặp trên bàn.`;
         set({ symbols: [...symbols, symbol], active: symbol });
         return null;
       },
@@ -94,10 +109,10 @@ export const useDesk = create<DeskState>()(
     }),
     {
       name: "orca-desk",
-      version: 2,
+      version: 4,
       migrate: (persisted, version) => {
         if (!persisted || typeof persisted !== "object") return persisted;
-        const state = persisted as { interval?: Interval; params?: Params };
+        const state = persisted as { interval?: Interval; params?: Params; symbols?: string[] };
         if (version < 1 && state.params?.smaDist === 2) {
           state.params = { ...state.params, smaDist: 0.3 };
         }
@@ -112,6 +127,23 @@ export const useDesk = create<DeskState>()(
             tpPct: 3.2,
             requireSma: false,
           };
+        }
+        if (version < 3) {
+          state.params = {
+            ...(state.params ?? defaultParams),
+            smaDist: 1,
+            requireSma: true,
+            requireSession: true,
+            requireWhale: false,
+            tpPct: 12,
+            slPct: 12,
+            requireCorrection: true,
+          };
+        }
+        if (version < 4) {
+          const have = state.symbols ?? [];
+          const extra = DEFAULT_SYMBOLS.filter((symbol) => !have.includes(symbol));
+          state.symbols = [...have, ...extra].slice(0, MAX_SYMBOLS);
         }
         return state;
       },

@@ -15,13 +15,15 @@ import {
   type FocusView,
 } from "@/lib/engine";
 import { formatClock, formatPct, formatPx, formatVn } from "@/lib/format";
-import { fetchBoard, type Board } from "@/lib/market";
+import { fetchBoard, scanPairs, type Board, type ScanHit } from "@/lib/market";
 import { useDesk } from "@/lib/store";
 import { PriceChart } from "@/components/price-chart";
 import { Journal, SessionPanel, Settings, SignalDock } from "@/components/panels";
 
-function signature(rows: { id: string; status: string; exit?: number; sl: number; tp: number; sessionNote?: string; whaleNote?: string }[]): string {
-  return rows.map((row) => `${row.id}:${row.status}:${row.exit ?? ""}:${row.sl}:${row.tp}:${row.sessionNote ?? ""}:${row.whaleNote ?? ""}`).join("|");
+function signature(rows: { id: string; status: string; exit?: number; sl: number; tp: number; sessionNote?: string; whaleNote?: string; wyckoffNote?: string }[]): string {
+  return rows
+    .map((row) => `${row.id}:${row.status}:${row.exit ?? ""}:${row.sl}:${row.tp}:${row.sessionNote ?? ""}:${row.whaleNote ?? ""}:${row.wyckoffNote ?? ""}`)
+    .join("|");
 }
 
 function badgeLabel(headline: string): string {
@@ -29,9 +31,23 @@ function badgeLabel(headline: string): string {
   return headline;
 }
 
+function mergeCandles(prev: Board["rows"][number]["candles"], next: Board["rows"][number]["candles"]) {
+  const map = new Map<number, (typeof next)[number]>();
+  for (const candle of prev) map.set(candle.time, candle);
+  for (const candle of next) map.set(candle.time, candle);
+  return [...map.values()].sort((a, b) => a.time - b.time).slice(-2000);
+}
+
 function applyBoard(prev: Board | null, incoming: Board, symbols: string[]): Board {
   const map = new Map(prev?.rows.map((row) => [row.symbol, row]) ?? []);
-  for (const row of incoming.rows) map.set(row.symbol, row);
+  for (const row of incoming.rows) {
+    const old = map.get(row.symbol);
+    if (row.candles.length === 0 && old) {
+      map.set(row.symbol, { ...old, error: row.error });
+      continue;
+    }
+    map.set(row.symbol, { ...row, candles: mergeCandles(old?.candles ?? [], row.candles) });
+  }
   return {
     rows: symbols.flatMap((symbol) => {
       const row = map.get(symbol);
@@ -55,8 +71,12 @@ export function Desk() {
   const [tick, setTick] = useState(0);
   const [draft, setDraft] = useState("");
   const [formError, setFormError] = useState<string | null>(null);
+  const [scanHits, setScanHits] = useState<ScanHit[] | null>(null);
+  const [scanning, setScanning] = useState(false);
+  const [scanError, setScanError] = useState<string | null>(null);
   const [pinned, setPinned] = useState<number | null>(null);
   const [now, setNow] = useState<number | null>(null);
+  const [statsRun, setStatsRun] = useState(0);
 
   useEffect(() => {
     let alive = true;
@@ -97,7 +117,7 @@ export function Desk() {
       const requested = useDesk.getState().symbols;
       if (!background) setLoading(true);
       try {
-        const next = await fetchBoard({ data: { symbols: requested, interval: requestedInterval, limit: 500 } });
+        const next = await fetchBoard({ data: { symbols: requested, interval: requestedInterval, limit: background ? 200 : 2000 } });
         if (cancel || useDesk.getState().interval !== requestedInterval) return;
         setBoard((prev) => applyBoard(prev, next, useDesk.getState().symbols));
         setError(null);
@@ -122,7 +142,7 @@ export function Desk() {
     const missing = missingKey.split("|");
     void (async () => {
       try {
-        const next = await fetchBoard({ data: { symbols: missing, interval: requestedInterval, limit: 500 } });
+        const next = await fetchBoard({ data: { symbols: missing, interval: requestedInterval, limit: 2000 } });
         if (cancel || useDesk.getState().interval !== requestedInterval) return;
         setBoard((prev) => applyBoard(prev, next, useDesk.getState().symbols));
         setError(null);
@@ -139,10 +159,10 @@ export function Desk() {
     const map = new Map<string, Analysis>();
     if (!board) return map;
     for (const row of board.rows) {
-      if (row.candles.length > 0) map.set(row.symbol, analyze(row.candles, params));
+      if (row.candles.length > 0) map.set(row.symbol, analyze(row.candles, params, interval));
     }
     return map;
-  }, [board, params]);
+  }, [board, params, interval, statsRun]);
 
   useEffect(() => {
     if (!board) return;
@@ -155,11 +175,15 @@ export function Desk() {
     const prev = Array.isArray(useDesk.getState().journal) ? useDesk.getState().journal : [];
     const next = mergeJournal(prev, fresh, covered);
     if (signature(prev) !== signature(next)) useDesk.getState().setJournal(next);
-  }, [board, analyses, interval, params]);
+  }, [board, analyses, interval, params, statsRun]);
 
   const activeRow = board?.rows.find((row) => row.symbol === active) ?? null;
   const candles: Candle[] = activeRow?.candles ?? [];
   const analysis = analyses.get(active) ?? null;
+  const exits = useMemo(() => {
+    if (!analysis || candles.length === 0) return [];
+    return papersFrom(active, interval, candles, analysis, params).filter((row) => row.status !== "open" && row.exit && row.exitTime);
+  }, [analysis, candles, active, interval, params]);
   const pinnedMarker = analysis?.markers.find((marker) => marker.index === pinned) ?? null;
   const focus: FocusView | null = pinnedMarker ? focusOfMarker(pinnedMarker, candles, params) : (analysis?.live ?? null);
   const safeJournal = Array.isArray(journal) ? journal : [];
@@ -184,7 +208,7 @@ export function Desk() {
           </svg>
           <div>
             <p className="text-lg font-semibold tracking-tight text-fg">ORCA</p>
-            <p className="text-xs text-muted">UT · Phiên · Cá voi</p>
+            <p className="text-xs text-muted">UT · Wyckoff · Phiên · Cá voi</p>
           </div>
         </div>
         <div className="flex flex-wrap gap-1" role="group" aria-label="Khung thời gian">
@@ -231,7 +255,7 @@ export function Desk() {
             >
               <input
                 aria-label="Thêm cặp"
-                placeholder="Thêm SOL, ETH…"
+                placeholder="Thêm cặp, tối đa 40"
                 value={draft}
                 onChange={(event) => setDraft(event.target.value)}
                 className="h-11 min-w-0 flex-1 rounded-md border border-border bg-bg px-3 text-base text-fg"
@@ -241,7 +265,7 @@ export function Desk() {
               </button>
             </form>
             {formError ? <p className="mt-2 text-sm text-bear">{formError}</p> : null}
-            <ul className="mt-2 flex flex-col">
+            <ul className="mt-2 flex max-h-[46vh] flex-col overflow-auto">
               {symbols.map((symbol) => {
                 const row = board?.rows.find((item) => item.symbol === symbol);
                 const view = analyses.get(symbol);
@@ -287,6 +311,63 @@ export function Desk() {
               {error ? ` · ${error}` : ""}
             </p>
           </section>
+          <section className="rounded-md border border-border bg-surface p-3">
+            <div className="flex items-center justify-between gap-2">
+              <h2 className="text-sm font-semibold text-fg">Quét 3 ngày</h2>
+              <button
+                type="button"
+                className="h-11 rounded-md bg-bull px-3 text-sm font-medium text-ink disabled:opacity-60"
+                disabled={scanning}
+                onClick={() => {
+                  setScanning(true);
+                  setScanError(null);
+                  void scanPairs({ data: { interval, params } })
+                    .then((result) => setScanHits(result.hits))
+                    .catch((err: unknown) => setScanError(err instanceof Error ? err.message : "Không quét được"))
+                    .finally(() => setScanning(false));
+                }}
+              >
+                {scanning ? "Đang quét…" : "Quét top 100"}
+              </button>
+            </div>
+            <p className="mt-2 text-xs text-muted">Top khối lượng 24 giờ trên Binance. Xếp theo sổ 3 ngày, đúng tham số đang áp dụng.</p>
+            {scanError ? <p className="mt-2 text-sm text-bear">{scanError}</p> : null}
+            {scanHits ? (
+              <ul className="mt-2 flex max-h-64 flex-col overflow-auto">
+                {scanHits.length === 0 ? <li className="py-2 text-sm text-muted">Không có lệnh đóng trong 3 ngày.</li> : null}
+                {scanHits.map((hit) => {
+                  const onBoard = symbols.includes(hit.symbol);
+                  return (
+                    <li key={hit.symbol} className="flex items-center justify-between gap-2 border-t border-border py-2">
+                      <button
+                        type="button"
+                        className="min-w-0 flex-1 text-left"
+                        onClick={() => {
+                          if (symbols.includes(hit.symbol)) useDesk.getState().setActive(hit.symbol);
+                        }}
+                      >
+                        <span className="font-mono text-sm text-fg">{hit.symbol.replace("USDT", "")}</span>
+                        <span className="mt-0.5 block font-mono text-xs text-muted">
+                          {hit.trades} lệnh · thắng {hit.win}% · {formatPct(hit.sum)}
+                        </span>
+                      </button>
+                      <button
+                        type="button"
+                        className="h-11 shrink-0 rounded-md border border-border px-3 text-sm text-fg disabled:text-muted"
+                        disabled={onBoard}
+                        onClick={() => {
+                          const message = useDesk.getState().addSymbol(hit.symbol);
+                          setFormError(message);
+                        }}
+                      >
+                        {onBoard ? "Đã có" : "Thêm"}
+                      </button>
+                    </li>
+                  );
+                })}
+              </ul>
+            ) : null}
+          </section>
           <SessionPanel analysis={analysis} nowMs={now} />
           <p className="px-1 text-xs text-muted">Mô phỏng trên nến Binance. Không đặt lệnh thật.</p>
         </aside>
@@ -301,7 +382,7 @@ export function Desk() {
                   {formatPct(delta)}
                 </span>
               </p>
-              <p className="text-xs text-muted">Tam giác đậm: đủ ba cổng. Vàng: thiếu cổng. Chấm: UT bị SMA loại. Dải ngang: hấp thụ.</p>
+              <p className="text-xs text-muted">Tam giác: vào lệnh. Ô TP, SL, Đảo: thoát. Vàng: thiếu cổng. Chấm: UT bị SMA loại.</p>
             </div>
             {analysis && candles.length > 0 ? (
               <PriceChart
@@ -309,6 +390,7 @@ export function Desk() {
                 candles={candles}
                 analysis={analysis}
                 trade={openTrade}
+                exits={exits}
                 pinned={pinned}
                 onPin={setPinned}
               />
@@ -350,8 +432,10 @@ export function Desk() {
           )}
           <Settings
             params={params}
-            onChange={(patch) => useDesk.getState().setParams(patch)}
-            onReset={() => useDesk.getState().resetParams()}
+            onApply={(next) => {
+              useDesk.getState().setParams(next);
+              setStatsRun((run) => run + 1);
+            }}
           />
         </aside>
       </div>

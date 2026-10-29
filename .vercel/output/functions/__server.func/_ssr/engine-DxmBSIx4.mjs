@@ -1,13 +1,353 @@
-//#region node_modules/.nitro/vite/services/ssr/assets/engine-B2WEO6yo.js
+//#region node_modules/.nitro/vite/services/ssr/assets/engine-DxmBSIx4.js
+var TF = {
+	"5m": 300,
+	"15m": 900,
+	"30m": 1800,
+	"1h": 3600,
+	"4h": 14400
+};
+function emptyPat(dir) {
+	return {
+		dir,
+		st: 0,
+		cBar: -1,
+		cP: NaN,
+		cVol: NaN,
+		cRsi: NaN,
+		rLow: NaN,
+		rHigh: NaN,
+		spP: NaN,
+		sosBar: -1,
+		sosPeak: NaN,
+		sosVol: NaN,
+		lpsP: NaN,
+		own: []
+	};
+}
+function rma(values, len) {
+	const out = values.map(() => NaN);
+	if (values.length < len) return out;
+	let seed = 0;
+	for (let i = 0; i < len; i += 1) seed += values[i];
+	let prev = seed / len;
+	out[len - 1] = prev;
+	for (let i = len; i < values.length; i += 1) {
+		prev = (prev * (len - 1) + values[i]) / len;
+		out[i] = prev;
+	}
+	return out;
+}
+function rsi(closes, len) {
+	const gain = closes.map(() => 0);
+	const loss = closes.map(() => 0);
+	for (let i = 1; i < closes.length; i += 1) {
+		const diff = closes[i] - closes[i - 1];
+		if (diff >= 0) gain[i] = diff;
+		else loss[i] = -diff;
+	}
+	const avgG = rma(gain, len);
+	const avgL = rma(loss, len);
+	return closes.map((_, i) => {
+		if (!Number.isFinite(avgG[i]) || !Number.isFinite(avgL[i])) return NaN;
+		if (avgL[i] === 0) return 100;
+		return 100 - 100 / (1 + avgG[i] / avgL[i]);
+	});
+}
+function ema(values, len) {
+	const out = values.map(() => NaN);
+	if (values.length < len) return out;
+	let seed = 0;
+	for (let i = 0; i < len; i += 1) seed += values[i];
+	let prev = seed / len;
+	out[len - 1] = prev;
+	const k = 2 / (len + 1);
+	for (let i = len; i < values.length; i += 1) {
+		prev = values[i] * k + prev * (1 - k);
+		out[i] = prev;
+	}
+	return out;
+}
+function sma$1(values, len) {
+	const out = values.map(() => NaN);
+	let sum = 0;
+	for (let i = 0; i < values.length; i += 1) {
+		sum += values[i];
+		if (i >= len) sum -= values[i - len];
+		if (i >= len - 1) out[i] = sum / len;
+	}
+	return out;
+}
+function atr$1(candles, len) {
+	return rma(candles.map((c, i) => {
+		const prev = i > 0 ? candles[i - 1].close : c.close;
+		return Math.max(c.high - c.low, Math.abs(c.high - prev), Math.abs(c.low - prev));
+	}), len);
+}
+function pivotAt(values, index, len, mode) {
+	const p = index - len;
+	if (p < len || index >= values.length) return null;
+	const v = values[p];
+	if (!Number.isFinite(v)) return null;
+	for (let k = p - len; k <= p + len; k += 1) {
+		if (k === p) continue;
+		const other = values[k];
+		if (!Number.isFinite(other)) return null;
+		if (mode === "high" ? other >= v : other <= v) return null;
+	}
+	return v;
+}
+function window3(values, pivot, mode) {
+	let best = mode === "max" ? -Infinity : Infinity;
+	let count = 0;
+	for (let k = pivot - 1; k <= pivot + 1; k += 1) {
+		if (k < 0 || k >= values.length || !Number.isFinite(values[k])) continue;
+		count += 1;
+		best = mode === "max" ? Math.max(best, values[k]) : Math.min(best, values[k]);
+	}
+	return count > 0 ? best : NaN;
+}
+function phaseName(st, dir) {
+	const acc = dir === 1;
+	if (st === 1) return acc ? "A (SC)" : "A (BC)";
+	if (st === 2) return "A (AR)";
+	if (st === 3) return "B (ST)";
+	if (st === 4) return acc ? "C (Spring)" : "C (UT)";
+	if (st === 5) return acc ? "D (SOS)" : "D (SOW)";
+	if (st === 6) return acc ? "D (LPS)" : "D (LPSY)";
+	if (st === 7) return acc ? "E (Markup)" : "E (Markdown)";
+	return "";
+}
+function describeWyckoff(acc, dist) {
+	if (acc > 0) return `Tích lũy Phase ${phaseName(acc, 1)}`;
+	if (dist > 0) return `Phân phối Phase ${phaseName(dist, -1)}`;
+	return "Chưa có sơ đồ Wyckoff";
+}
+function wyckoffSide(acc, dist, side) {
+	const phase = describeWyckoff(acc, dist);
+	const accReady = acc >= 4;
+	const distReady = dist >= 4;
+	if (side === "LONG") {
+		if (distReady) return {
+			ok: false,
+			text: `${phase}. Không LONG sau UT/SOW.`
+		};
+		if (accReady) return {
+			ok: true,
+			text: `${phase}. LONG cùng Spring/SOS.`
+		};
+		return {
+			ok: true,
+			text: acc > 0 || dist > 0 ? `${phase}. Chưa tới Spring/UT, không chặn.` : "Chưa có sơ đồ Wyckoff, không chặn."
+		};
+	}
+	if (accReady) return {
+		ok: false,
+		text: `${phase}. Không SHORT sau Spring/SOS.`
+	};
+	if (distReady) return {
+		ok: true,
+		text: `${phase}. SHORT cùng UT/SOW.`
+	};
+	return {
+		ok: true,
+		text: acc > 0 || dist > 0 ? `${phase}. Chưa tới Spring/UT, không chặn.` : "Chưa có sơ đồ Wyckoff, không chặn."
+	};
+}
+function scanWyckoff(candles, interval) {
+	const n = candles.length;
+	const accState = candles.map(() => 0);
+	const distState = candles.map(() => 0);
+	const events = [];
+	let range = null;
+	if (n < 40) return {
+		acc: accState,
+		dist: distState,
+		events,
+		range
+	};
+	const tfs = TF[interval];
+	const climaxMult = tfs <= 1800 ? 2.2 : tfs <= 3600 ? 2 : tfs <= 7200 ? 1.8 : tfs <= 14400 ? 1.5 : 1.3;
+	const pivBase = tfs <= 300 ? 8 : tfs <= 1800 ? 7 : tfs <= 7200 ? 6 : tfs <= 14400 ? 5 : 4;
+	const maxTR = tfs <= 1800 ? 250 : tfs <= 3600 ? 200 : tfs <= 7200 ? 150 : tfs <= 14400 ? 120 : 100;
+	const emaFLen = tfs >= 86400 ? 20 : 50;
+	const pivLen = Math.max(2, pivBase);
+	const sens = 25;
+	const arAtr = 2;
+	const closes = candles.map((c) => c.close);
+	const highs = candles.map((c) => c.high);
+	const lows = candles.map((c) => c.low);
+	const vols = candles.map((c) => c.volume);
+	const rsiV = rsi(closes, 14);
+	const volMa = sma$1(vols, 30);
+	const atrV = atr$1(candles, 14);
+	const emaF = ema(closes, emaFLen);
+	const acc = emptyPat(1);
+	const dist = emptyPat(-1);
+	const reset = (p, clean) => {
+		if (clean) {
+			for (const event of p.own) {
+				const at = events.indexOf(event);
+				if (at >= 0) events.splice(at, 1);
+			}
+			if (range && range.dir === p.dir) range = null;
+		}
+		p.own = [];
+		p.st = 0;
+		p.cBar = -1;
+		p.cP = NaN;
+		p.cVol = NaN;
+		p.cRsi = NaN;
+		p.rLow = NaN;
+		p.rHigh = NaN;
+		p.spP = NaN;
+		p.sosBar = -1;
+		p.sosPeak = NaN;
+		p.sosVol = NaN;
+		p.lpsP = NaN;
+	};
+	const addEvent = (p, index, priceT, name) => {
+		const event = {
+			index,
+			price: p.dir * priceT,
+			name,
+			dir: p.dir
+		};
+		p.own.push(event);
+		events.push(event);
+	};
+	const realHigh = (p) => p.dir === 1 ? p.rHigh : -p.rLow;
+	const realLow = (p) => p.dir === 1 ? p.rLow : -p.rHigh;
+	const step = (p, other, index, extP, oppP, closeT, hiT, emaT, rsiExtT, closePvT, closeNxT, emaPvT, volMax, volMaPv, atrPv, volPv, volume, volAvg) => {
+		const pivotBar = index - pivLen;
+		const isAcc = p.dir === 1;
+		if (p.st > 0 && p.st < 7) {
+			let failed = index - p.cBar > maxTR;
+			if (p.st === 2 || p.st === 3) failed = failed || closeT < p.rLow - 2 * atrV[index];
+			else if (p.st === 4) failed = failed || closeT < p.spP - .5 * atrV[index];
+			else if (p.st === 5) failed = failed || closeT < p.rLow;
+			else if (p.st === 6) failed = failed || closeT < p.lpsP - atrV[index];
+			if (failed) reset(p, true);
+		}
+		if (p.st === 7 && closeT < emaT) reset(p, false);
+		if (p.st === 1) {
+			if (extP != null && extP < p.cP) reset(p, true);
+			else if (oppP != null && Number.isFinite(atrPv) && oppP - p.cP >= arAtr * atrPv) {
+				p.st = 2;
+				p.rHigh = oppP;
+				addEvent(p, pivotBar, oppP, "AR");
+				range = {
+					left: p.cBar,
+					right: index,
+					low: realLow(p),
+					high: realHigh(p),
+					dir: p.dir
+				};
+			}
+		} else if (p.st === 2) {
+			if (oppP != null && oppP > p.rHigh) p.rHigh = oppP;
+			if (extP != null) {
+				if (Number.isFinite(atrPv) && extP < p.cP - .5 * atrPv) reset(p, true);
+				else if (extP <= p.rLow + .5 * (p.rHigh - p.rLow) && (volMax < p.cVol || rsiExtT > p.cRsi)) {
+					p.st = 3;
+					p.rLow = Math.min(p.rLow, extP);
+					addEvent(p, pivotBar, extP, "ST");
+				}
+			}
+		} else if (p.st === 3 && extP != null && extP < p.rLow) {
+			const recovered = closePvT > p.rLow || closeNxT > p.rLow;
+			if (Number.isFinite(atrPv) && extP >= p.rLow - 1.5 * atrPv && recovered) {
+				p.st = 4;
+				p.spP = extP;
+				addEvent(p, pivotBar, extP, isAcc ? "Spring" : "UT");
+			} else reset(p, true);
+		}
+		if ((p.st === 4 || p.st === 3 && false) && closeT > p.rHigh && volume >= volAvg && closeT > emaT) {
+			p.st = 5;
+			p.sosBar = index;
+			p.sosPeak = hiT;
+			p.sosVol = volume;
+			addEvent(p, index, hiT, isAcc ? "SOS" : "SOW");
+		}
+		if (p.st === 5) {
+			if (extP != null && pivotBar > p.sosBar && extP > p.rLow + .5 * (p.rHigh - p.rLow) && Number.isFinite(atrPv) && extP < p.sosPeak - .5 * atrPv && volPv < p.sosVol) {
+				p.st = 6;
+				p.lpsP = extP;
+				addEvent(p, pivotBar, extP, isAcc ? "LPS" : "LPSY");
+			}
+		} else if (p.st === 6 && closeT > p.sosPeak && closeT > emaT) {
+			p.st = 7;
+			addEvent(p, index, hiT, isAcc ? "Markup" : "Markdown");
+			if (range && range.dir === p.dir) range = {
+				...range,
+				right: index
+			};
+		}
+		if ((p.st === 5 || p.st === 6) && hiT > p.sosPeak) p.sosPeak = hiT;
+		if (p.st >= 2 && p.st <= 6 && range && range.dir === p.dir) range = {
+			left: p.cBar,
+			right: index,
+			low: realLow(p),
+			high: realHigh(p),
+			dir: p.dir
+		};
+		if (p.st === 0 && extP != null && Number.isFinite(volMaPv) && volMax >= volMaPv * climaxMult && Number.isFinite(rsiExtT) && rsiExtT <= sens && Number.isFinite(emaPvT) && closePvT < emaPvT) {
+			let blocked = false;
+			if (other.st >= 3 && other.st <= 6) blocked = true;
+			else if (other.st === 7) reset(other, false);
+			else if (other.st > 0) reset(other, true);
+			if (!blocked) {
+				p.st = 1;
+				p.cBar = pivotBar;
+				p.cP = extP;
+				p.cVol = volMax;
+				p.cRsi = rsiExtT;
+				p.rLow = extP;
+				addEvent(p, pivotBar, extP, isAcc ? "SC" : "BC");
+			}
+		}
+	};
+	for (let i = pivLen * 2; i < n - 1; i += 1) {
+		const ph = pivotAt(highs, i, pivLen, "high");
+		const pl = pivotAt(lows, i, pivLen, "low");
+		const pivot = i - pivLen;
+		const volMax = window3(vols, pivot, "max");
+		const rsiMin = window3(rsiV, pivot, "min");
+		const rsiMax = window3(rsiV, pivot, "max");
+		const atrPv = atrV[pivot];
+		const volMaPv = volMa[pivot];
+		const volPv = vols[pivot];
+		const closePv = closes[pivot];
+		const closeNx = closes[pivot + 1];
+		const emaPv = emaF[pivot];
+		if (Number.isFinite(atrV[i]) && Number.isFinite(emaF[i]) && Number.isFinite(volMa[i]) && Number.isFinite(rsiV[i])) {
+			step(acc, dist, i, pl, ph, closes[i], highs[i], emaF[i], rsiMin, closePv, closeNx, emaPv, volMax, volMaPv, atrPv, volPv, vols[i], volMa[i]);
+			step(dist, acc, i, ph == null ? null : -ph, pl == null ? null : -pl, -closes[i], -lows[i], -emaF[i], 100 - rsiMax, -closePv, -closeNx, -emaPv, volMax, volMaPv, atrPv, volPv, vols[i], volMa[i]);
+		}
+		accState[i] = acc.st;
+		distState[i] = dist.st;
+	}
+	if (n > 1) {
+		accState[n - 1] = accState[n - 2] ?? 0;
+		distState[n - 1] = distState[n - 2] ?? 0;
+	}
+	return {
+		acc: accState,
+		dist: distState,
+		events,
+		range
+	};
+}
 var INTERVALS = [
 	"5m",
 	"15m",
+	"30m",
 	"1h",
 	"4h"
 ];
 var INTERVAL_LABEL = {
 	"5m": "5 phút",
 	"15m": "15 phút",
+	"30m": "30 phút",
 	"1h": "1 giờ",
 	"4h": "4 giờ"
 };
@@ -28,6 +368,7 @@ var defaultParams = {
 	bearMax: 48,
 	requireSession: true,
 	requireWhale: true,
+	requireWyckoff: true,
 	requireSma: false
 };
 function clampParams(p) {
@@ -49,6 +390,7 @@ function clampParams(p) {
 		bearMax: num(p.bearMax, 30, 50),
 		requireSession: Boolean(p.requireSession),
 		requireWhale: Boolean(p.requireWhale),
+		requireWyckoff: p.requireWyckoff === void 0 ? true : Boolean(p.requireWyckoff),
 		requireSma: Boolean(p.requireSma)
 	};
 }
@@ -452,11 +794,16 @@ function gatesOpen(m, params) {
 	if (!m.smaOk) return false;
 	if (params.requireSession && !m.sessionRaw) return false;
 	if (params.requireWhale && !m.whaleRaw) return false;
+	if (params.requireWyckoff && !m.wyckoffRaw) return false;
 	return true;
 }
 function focusOfMarker(m, candles, params) {
 	const bookable = gatesOpen(m, params);
-	const asked = [params.requireSession ? "phiên" : "", params.requireWhale ? "cá voi" : ""].filter(Boolean);
+	const asked = [
+		params.requireWyckoff ? "wyckoff" : "",
+		params.requireSession ? "phiên" : "",
+		params.requireWhale ? "cá voi" : ""
+	].filter(Boolean);
 	const headline = bookable ? m.provisional ? `TẠM ${m.side}` : m.side : m.smaOk ? "CHỜ" : "LỌC";
 	const kicker = bookable ? m.provisional ? "Đủ cổng trên nến chưa đóng" : asked.length ? `${asked[0].charAt(0).toUpperCase()}${asked.join(" và ").slice(1)} đã xác nhận` : "Đã tắt lọc phiên và cá voi" : m.smaOk ? "UT đạt, sổ giấy chưa được vào" : "UT đảo nhưng SMA loại";
 	let entry = candles[m.index]?.close ?? NaN;
@@ -480,6 +827,11 @@ function focusOfMarker(m, candles, params) {
 				label: "UT + SMA",
 				state: m.smaOk ? "pass" : "fail",
 				text: m.smaText
+			},
+			{
+				label: "Wyckoff",
+				state: params.requireWyckoff ? m.wyckoffRaw ? "pass" : "fail" : "pass",
+				text: params.requireWyckoff ? m.wyckoffRawText : `Đã tắt lọc Wyckoff. ${m.wyckoffRawText}`
 			},
 			{
 				label: "Phiên",
@@ -515,7 +867,7 @@ function emptyFocus(text) {
 		markerIndex: null
 	};
 }
-function analyze(candles, rawParams) {
+function analyze(candles, rawParams, interval = "5m") {
 	const params = clampParams(rawParams);
 	const n = candles.length;
 	const stops = candles.map(() => NaN);
@@ -583,6 +935,8 @@ function analyze(candles, rawParams) {
 			text: side === "LONG" ? now.longText : now.shortText
 		};
 	};
+	const wyckoff = scanWyckoff(candles, interval);
+	const wyckoffAt = (index, side) => wyckoffSide(wyckoff.acc[index] ?? 0, wyckoff.dist[index] ?? 0, side);
 	const pushMarker = (index, side, provisional) => {
 		const stats = summarizeHours(hourPref[index], params.sessionMinBars);
 		const lowExt = windowExtreme(devLow, index, need, "min");
@@ -601,8 +955,13 @@ function analyze(candles, rawParams) {
 		const whaleOk = params.requireWhale ? whaleRaw : true;
 		const whaleRawText = whaleEval.text;
 		const whaleText = params.requireWhale ? whaleRawText : `Đã tắt lọc cá voi trên biểu đồ. ${whaleRawText}`;
+		const wyckoffEval = wyckoffAt(index, side);
+		const wyckoffRaw = wyckoffEval.ok;
+		const wyckoffOk = params.requireWyckoff ? wyckoffRaw : true;
+		const wyckoffRawText = wyckoffEval.text;
+		const wyckoffText = params.requireWyckoff ? wyckoffRawText : `Đã tắt lọc Wyckoff trên biểu đồ. ${wyckoffRawText}`;
 		let tier = "filtered";
-		if (smaOk && sessionOk && whaleOk) tier = "confirmed";
+		if (smaOk && sessionOk && whaleOk && wyckoffOk) tier = "confirmed";
 		else if (smaOk) tier = "partial";
 		markers.push({
 			index,
@@ -612,13 +971,17 @@ function analyze(candles, rawParams) {
 			smaOk,
 			sessionOk,
 			whaleOk,
+			wyckoffOk,
 			sessionRaw,
 			whaleRaw,
+			wyckoffRaw,
 			smaText,
 			sessionText,
 			whaleText,
+			wyckoffText,
 			sessionRawText: sessionEval.text,
-			whaleRawText
+			whaleRawText,
+			wyckoffRawText
 		});
 	};
 	for (let i = 0; i < n; i += 1) {
@@ -672,13 +1035,14 @@ function analyze(candles, rawParams) {
 			const smaRaw = next === "LONG" ? lowExt != null && lowExt <= -params.smaDist : highExt != null && highExt >= params.smaDist;
 			const dist = (candles[last].close / smaLine[last] - 1) * 100;
 			const distTxt = `${dist >= 0 ? "+" : ""}${dist.toFixed(2)}%`;
-			const gates = (!params.requireSession || sessionEval.ok) && (!params.requireWhale || whaleEval.ok);
+			const wyckoffEval = wyckoffAt(last, next);
+			const gates = (!params.requireSession || sessionEval.ok) && (!params.requireWhale || whaleEval.ok) && (!params.requireWyckoff || wyckoffEval.ok);
 			const smaLineText = params.requireSma ? smaRaw ? `Điều kiện SMA cho ${next} đã có trong ${need} nến.` : `Điều kiện SMA cho ${next} chưa có.` : `Đã tắt lọc cách SMA. ${smaRaw ? "Khoảng cách vẫn đủ." : "Khoảng cách chưa đủ."}`;
 			live = {
 				headline: "ĐỢI",
 				tone: "muted",
 				kicker: trendUp ? "UT đang ở pha tăng" : "UT đang ở pha giảm",
-				sub: `Lệnh kế tiếp là ${next}. ${params.requireSma ? smaRaw ? "Khoảng cách SMA đã đủ." : "Khoảng cách SMA chưa đủ." : "Đã tắt lọc cách SMA."} ${gates ? "Phiên và cá voi đang xác nhận phía đó — vẫn chưa vào sổ vì chưa có đảo UT." : "Chưa vào sổ: phiên hoặc cá voi chưa xác nhận phía đó."}`,
+				sub: `Lệnh kế tiếp là ${next}. ${params.requireSma ? smaRaw ? "Khoảng cách SMA đã đủ." : "Khoảng cách SMA chưa đủ." : "Đã tắt lọc cách SMA."} ${gates ? "Các cổng đang bật không chặn phía đó — vẫn chưa vào sổ vì chưa có đảo UT." : "Chưa vào sổ: Wyckoff, phiên hoặc cá voi chưa cho phía đó."}`,
 				time: candles[last].time,
 				side: next,
 				checks: [
@@ -686,6 +1050,11 @@ function analyze(candles, rawParams) {
 						label: "UT + SMA",
 						state: "wait",
 						text: `Chưa đảo chiều. Giá cách SMA ${distTxt}, dải ±${params.smaDist}%. ${smaLineText}`
+					},
+					{
+						label: "Wyckoff",
+						state: params.requireWyckoff ? wyckoffEval.ok ? "pass" : "fail" : "pass",
+						text: params.requireWyckoff ? wyckoffEval.text : `Đã tắt lọc Wyckoff. ${wyckoffEval.text}`
 					},
 					{
 						label: "Phiên",
@@ -719,11 +1088,13 @@ function analyze(candles, rawParams) {
 		counts,
 		lastConfirmed,
 		sessionsNow,
-		overlap
+		overlap,
+		wyckoffEvents: wyckoff.events,
+		wyckoffRange: wyckoff.range
 	};
 }
 function changePct(candles, interval) {
-	const back = interval === "5m" ? 288 : interval === "15m" ? 96 : interval === "1h" ? 24 : 6;
+	const back = interval === "5m" ? 288 : interval === "15m" ? 96 : interval === "30m" ? 48 : interval === "1h" ? 24 : 6;
 	if (candles.length < 2) return NaN;
 	const prev = candles[Math.max(0, candles.length - 1 - back)]?.close;
 	const last = candles[candles.length - 1]?.close;
@@ -790,7 +1161,8 @@ function papersFrom(symbol, interval, candles, analysis, params) {
 			exit,
 			exitTime,
 			sessionNote: names.length ? `${names.join(" · ")} · ${m.sessionRawText}` : m.sessionRawText,
-			whaleNote: m.whaleRawText
+			whaleNote: m.whaleRawText,
+			wyckoffNote: m.wyckoffRawText
 		});
 	}
 	return out;

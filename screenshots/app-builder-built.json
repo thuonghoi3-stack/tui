@@ -7,9 +7,9 @@
       "status": 200,
       "title": "ORCA",
       "hasCanvas": false,
-      "bodyTextLen": 725,
-      "bodyTextHash": "ca1f6f39d57de50bb562126639385ce775b46e386c0576007332df360420dbee",
-      "bodyTextPrefix": "ORCA UT · Phiên · Cá voi 5 phút 15 phút 1 giờ 4 giờ VN 02:11:42 ",
+      "bodyTextLen": 744,
+      "bodyTextHash": "87609b926b88f7a0b53fab24e5e647fd4bf2a89005b2d142463532777fcdf3b1",
+      "bodyTextPrefix": "ORCA UT · Wyckoff · Phiên · Cá voi 5 phút 15 phút 30 phút 1 giờ ",
       "horizontalOverflow": false,
       "consoleErrors": [],
       "pageErrors": [],
@@ -21,9 +21,9 @@
       "status": 200,
       "title": "ORCA",
       "hasCanvas": false,
-      "bodyTextLen": 18580,
-      "bodyTextHash": "49c21cdb876914d0e421dfc935ecf4925e8fbc8a280120f13fc064a02bd8e7dd",
-      "bodyTextPrefix": "ORCA UT · Phiên · Cá voi 5 phút 15 phút 1 giờ 4 giờ VN 02:11:43 ",
+      "bodyTextLen": 23051,
+      "bodyTextHash": "9b3f72a3b74eab5cc3ae7bb6251ca1471fc97bbf26701b19b71c69647ad1a8af",
+      "bodyTextPrefix": "ORCA UT · Wyckoff · Phiên · Cá voi 5 phút 15 phút 30 phút 1 giờ ",
       "horizontalOverflow": false,
       "consoleErrors": [],
       "pageErrors": [],
@@ -38,6 +38,6 @@
   "divergesFromBaseline": true,
   "baselineReasons": [
     "desktop: body text replaced (similar length, page start changed)",
-    "mobile: body text changed (11336 -> 18580 chars, hash mismatch)"
+    "mobile: body text changed (11336 -> 23051 chars, hash mismatch)"
   ]
 }

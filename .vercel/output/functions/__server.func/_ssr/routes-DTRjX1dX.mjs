@@ -1,10 +1,10 @@
 import { i as __toESM } from "../_runtime.mjs";
 import { b as require_jsx_runtime, q as require_react } from "../_libs/@tanstack/react-router+[...].mjs";
 import { n as TSS_SERVER_FUNCTION, r as getServerFnById, t as createServerFn } from "./ssr.mjs";
-import { a as changePct, c as focusOfMarker, d as normalizeSymbol, f as papersFrom, i as analyze, l as hourOf, n as INTERVAL_LABEL, o as clampParams, p as pnlPct, r as SESSIONS, s as defaultParams, t as INTERVALS, u as mergeJournal } from "./engine-B2WEO6yo.mjs";
+import { a as changePct, c as focusOfMarker, d as normalizeSymbol, f as papersFrom, i as analyze, l as hourOf, n as INTERVAL_LABEL, o as clampParams, p as pnlPct, r as SESSIONS, s as defaultParams, t as INTERVALS, u as mergeJournal } from "./engine-DxmBSIx4.mjs";
 import { n as RefreshCw } from "../_libs/lucide-react.mjs";
 import { n as persist, r as create, t as createJSONStorage } from "../_libs/zustand.mjs";
-//#region node_modules/.nitro/vite/services/ssr/assets/routes-kiwfdkN6.js
+//#region node_modules/.nitro/vite/services/ssr/assets/routes-DTRjX1dX.js
 var import_react = /* @__PURE__ */ __toESM(require_react());
 var import_jsx_runtime = require_jsx_runtime();
 function formatPx(n) {
@@ -593,6 +593,30 @@ function PriceChart({ resetKey, candles, analysis, trade, pinned, onPin }) {
 							fill: color
 						})] }, candle.time);
 					}),
+					analysis.wyckoffRange ? /* @__PURE__ */ (0, import_jsx_runtime.jsx)("rect", {
+						x: Math.max(plotL, xOf(analysis.wyckoffRange.left)),
+						y: yOf(analysis.wyckoffRange.high),
+						width: Math.max(0, Math.min(plotR, xOf(analysis.wyckoffRange.right)) - Math.max(plotL, xOf(analysis.wyckoffRange.left))),
+						height: Math.max(1, yOf(analysis.wyckoffRange.low) - yOf(analysis.wyckoffRange.high)),
+						fill: analysis.wyckoffRange.dir === 1 ? "var(--color-bull)" : "var(--color-bear)",
+						opacity: .08,
+						stroke: analysis.wyckoffRange.dir === 1 ? "var(--color-bull)" : "var(--color-bear)",
+						strokeOpacity: .45
+					}) : null,
+					analysis.wyckoffEvents.filter((event) => event.index >= startIndex && event.index <= endIndex).map((event) => {
+						const x = xOf(event.index);
+						const up = event.dir === 1;
+						const y = up ? yOf(event.price) + 12 : yOf(event.price) - 6;
+						return /* @__PURE__ */ (0, import_jsx_runtime.jsx)("text", {
+							x,
+							y,
+							textAnchor: "middle",
+							fill: up ? "var(--color-bull)" : "var(--color-bear)",
+							fontSize: "10",
+							fontFamily: "IBM Plex Mono, ui-monospace, monospace",
+							children: event.name
+						}, `${event.index}-${event.name}-${event.dir}`);
+					}),
 					markersHere.map((marker) => {
 						const candle = candles[marker.index];
 						const x = xOf(marker.index);
@@ -794,7 +818,7 @@ function SignalDock({ focus, analysis, pinned, onClearPin, intervalWarning }) {
 			}) : null,
 			/* @__PURE__ */ (0, import_jsx_runtime.jsx)("p", {
 				className: "px-3 pb-3 text-xs text-muted",
-				children: "UT và bộ lọc SMA theo strategy. Phiên và cá voi chỉ loại lệnh khi thuận chiều quá rõ, vì đây là lệnh đảo chứ không phải lệnh đuổi. Sổ lệnh là giấy, không phải lệnh thật và không phải lời khuyên đầu tư."
+				children: "UT theo strategy. Wyckoff là sơ đồ tích lũy hoặc phân phối trên đúng khung nến. Phiên và cá voi chỉ loại khi thuận chiều quá rõ. Sổ lệnh là giấy, không phải lệnh thật và không phải lời khuyên đầu tư."
 			})
 		]
 	});
@@ -953,7 +977,7 @@ function Journal({ rows, marks, onOpen, onClear }) {
 			})]
 		}), rows.length === 0 ? /* @__PURE__ */ (0, import_jsx_runtime.jsx)("p", {
 			className: "px-3 py-3 text-sm text-muted",
-			children: "Chưa có lệnh. Sổ chỉ ghi sau nến đóng, khi các cổng đang bật không thấy phiên hoặc cá voi thuận chiều quá rõ."
+			children: "Chưa có lệnh. Sổ chỉ ghi sau nến đóng, khi Wyckoff không ngược sơ đồ và các cổng đang bật không chặn."
 		}) : /* @__PURE__ */ (0, import_jsx_runtime.jsxs)(import_jsx_runtime.Fragment, { children: [/* @__PURE__ */ (0, import_jsx_runtime.jsx)("ul", {
 			className: "max-h-64 divide-y divide-border overflow-auto xl:hidden",
 			children: rows.map((row) => /* @__PURE__ */ (0, import_jsx_runtime.jsx)("li", { children: /* @__PURE__ */ (0, import_jsx_runtime.jsxs)("button", {
@@ -1065,16 +1089,23 @@ function Journal({ rows, marks, onOpen, onClear }) {
 	});
 }
 function GateNotes({ row }) {
-	if (!row.sessionNote && !row.whaleNote) return null;
+	if (!row.sessionNote && !row.whaleNote && !row.wyckoffNote) return null;
 	return /* @__PURE__ */ (0, import_jsx_runtime.jsxs)("span", {
 		className: "mt-0.5 block font-mono text-xs leading-snug text-muted",
-		children: [row.sessionNote ? /* @__PURE__ */ (0, import_jsx_runtime.jsxs)("span", {
-			className: "block",
-			children: ["Phiên đạt · ", row.sessionNote]
-		}) : null, row.whaleNote ? /* @__PURE__ */ (0, import_jsx_runtime.jsxs)("span", {
-			className: "block",
-			children: ["Cá voi đạt · ", row.whaleNote]
-		}) : null]
+		children: [
+			row.wyckoffNote ? /* @__PURE__ */ (0, import_jsx_runtime.jsxs)("span", {
+				className: "block",
+				children: ["Wyckoff · ", row.wyckoffNote]
+			}) : null,
+			row.sessionNote ? /* @__PURE__ */ (0, import_jsx_runtime.jsxs)("span", {
+				className: "block",
+				children: ["Phiên đạt · ", row.sessionNote]
+			}) : null,
+			row.whaleNote ? /* @__PURE__ */ (0, import_jsx_runtime.jsxs)("span", {
+				className: "block",
+				children: ["Cá voi đạt · ", row.whaleNote]
+			}) : null
+		]
 	});
 }
 function TradeResult({ row, mark }) {
@@ -1095,7 +1126,7 @@ function Settings({ params, onChange, onReset }) {
 		children: [/* @__PURE__ */ (0, import_jsx_runtime.jsxs)("summary", {
 			className: "flex h-11 cursor-pointer list-none items-center justify-between px-3 text-sm text-fg",
 			children: [
-				"Thông số UT, SMA, phiên, cá voi",
+				"Thông số UT, SMA, Wyckoff, phiên, cá voi",
 				/* @__PURE__ */ (0, import_jsx_runtime.jsx)("span", {
 					className: "text-muted group-open:hidden",
 					children: "Mở"
@@ -1189,6 +1220,11 @@ function Settings({ params, onChange, onReset }) {
 					onClick: () => onChange({ useExtreme: !params.useExtreme })
 				}),
 				/* @__PURE__ */ (0, import_jsx_runtime.jsx)(Toggle, {
+					label: "Bắt buộc Wyckoff",
+					on: params.requireWyckoff,
+					onClick: () => onChange({ requireWyckoff: !params.requireWyckoff })
+				}),
+				/* @__PURE__ */ (0, import_jsx_runtime.jsx)(Toggle, {
 					label: "Bắt buộc phiên",
 					on: params.requireSession,
 					onClick: () => onChange({ requireSession: !params.requireSession })
@@ -1206,7 +1242,7 @@ function Settings({ params, onChange, onReset }) {
 				}),
 				/* @__PURE__ */ (0, import_jsx_runtime.jsx)("p", {
 					className: "col-span-2 text-xs text-muted",
-					children: "Sổ giấy vào lệnh khi nến đã đóng và mọi cổng đang bật không đuổi theo. Phiên chỉ chặn khi khung đang mở thuận chiều rõ. Cá voi chỉ chặn khi delta quanh giá cùng chiều từ 35%. Tắt công tắc thì cổng đó không chặn sổ."
+					children: "Sổ giấy vào lệnh khi nến đã đóng và mọi cổng đang bật cùng cho. Wyckoff chỉ chặn khi sơ đồ đã tới Spring/SOS hoặc UT/SOW và lệnh đi ngược chiều đó. Trước đó sơ đồ chỉ hiển thị, không chặn. Phiên và cá voi chỉ chặn khi thuận chiều quá rõ. Tắt công tắc thì cổng đó không chặn sổ."
 				})
 			]
 		})]
@@ -1379,7 +1415,7 @@ function Desk() {
 	const analyses = (0, import_react.useMemo)(() => {
 		const map = /* @__PURE__ */ new Map();
 		if (!board) return map;
-		for (const row of board.rows) if (row.candles.length > 0) map.set(row.symbol, analyze(row.candles, params));
+		for (const row of board.rows) if (row.candles.length > 0) map.set(row.symbol, analyze(row.candles, params, interval));
 		return map;
 	}, [board, params]);
 	(0, import_react.useEffect)(() => {
@@ -1455,7 +1491,7 @@ function Desk() {
 						children: "ORCA"
 					}), /* @__PURE__ */ (0, import_jsx_runtime.jsx)("p", {
 						className: "text-xs text-muted",
-						children: "UT · Phiên · Cá voi"
+						children: "UT · Wyckoff · Phiên · Cá voi"
 					})] })]
 				}),
 				/* @__PURE__ */ (0, import_jsx_runtime.jsx)("div", {
