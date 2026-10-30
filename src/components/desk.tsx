@@ -330,7 +330,7 @@ export function Desk() {
                 {scanning ? "Đang quét…" : "Quét top 100"}
               </button>
             </div>
-            <p className="mt-2 text-xs text-muted">Top khối lượng 24 giờ trên Binance. Xếp theo sổ 3 ngày, đúng tham số đang áp dụng.</p>
+            <p className="mt-2 text-xs text-muted">Top khối lượng 24 giờ trên Binance. Xếp theo tỷ lệ thắng nhân tổng lãi trong 3 ngày. Cặp lỗ xếp cuối.</p>
             {scanError ? <p className="mt-2 text-sm text-bear">{scanError}</p> : null}
             {scanHits ? (
               <ul className="mt-2 flex max-h-64 flex-col overflow-auto">

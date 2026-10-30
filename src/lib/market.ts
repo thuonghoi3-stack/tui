@@ -171,6 +171,7 @@ export const scanPairs = createServerFn({ method: "POST" })
       }
     });
     await Promise.all(workers);
-    hits.sort((a, b) => b.sum - a.sum || b.win - a.win);
+    const rank = (hit: ScanHit) => (hit.sum > 0 ? (hit.win / 100) * hit.sum : hit.sum);
+    hits.sort((a, b) => rank(b) - rank(a) || b.win - a.win || b.sum - a.sum);
     return { scanned: top.length, interval: data.interval, hits: hits.slice(0, 15) };
   });
