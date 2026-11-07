@@ -379,7 +379,7 @@ export function PriceChart({ resetKey, candles, analysis, trade, exits, pinned, 
           {[...exitMarks.values()].map(({ row, index, n }) => {
             const candle = candles[index];
             const x = xOf(index);
-            const price = row.status === "reverse" ? candle.close : (row.exit ?? candle.close);
+            const price = row.exit ?? candle.close;
             const y = yOf(price);
             const label = row.status === "tp" ? "TP" : row.status === "sl" ? "SL" : "Đảo";
             const color = row.status === "tp" ? "var(--color-bull)" : row.status === "sl" ? "var(--color-bear)" : "var(--color-line)";

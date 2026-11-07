@@ -4,6 +4,7 @@ import {
   analyze,
   changePct,
   clampParams,
+  continueOpen,
   defaultParams,
   focusOfMarker,
   INTERVAL_LABEL,
@@ -14,6 +15,7 @@ import {
   type Candle,
   type FocusView,
   type Interval,
+  type Paper,
 } from "@/lib/engine";
 import { formatClock, formatPct, formatPx, formatVn } from "@/lib/format";
 import { fetchBoard, scanPairs, type Board, type ScanHit } from "@/lib/market";
@@ -111,6 +113,7 @@ export function Desk() {
 
   useEffect(() => {
     scanGen.current += 1;
+    setScanning(false);
     setScanHits(null);
     setScanInterval(null);
   }, [interval, params]);
@@ -178,10 +181,29 @@ export function Desk() {
 
   useEffect(() => {
     if (!board || board.interval !== interval) return;
+    const prev = Array.isArray(useDesk.getState().journal) ? useDesk.getState().journal : [];
+    const carried = new Map<string, Paper>();
+    const busyUntil = new Map<string, number>();
+    for (const row of board.rows) {
+      const first = row.candles[0];
+      const found = analyses.get(row.symbol);
+      if (!first || !found) continue;
+      const key = `${row.symbol}|${interval}`;
+      const opens = prev
+        .filter((item) => item.symbol === row.symbol && item.interval === interval && item.status === "open" && item.signalTime < first.time)
+        .sort((a, b) => a.signalTime - b.signalTime);
+      let busy = -1;
+      for (const open of opens) {
+        const settled = continueOpen(open, row.candles, found, params);
+        carried.set(open.id, settled.paper);
+        busy = settled.paper.status === "open" ? row.candles.length : Math.max(busy, settled.busyUntil);
+      }
+      if (opens.length) busyUntil.set(key, busy);
+    }
     const fresh = board.rows.flatMap((row) => {
       const found = analyses.get(row.symbol);
       if (!found) return [];
-      return papersFrom(row.symbol, interval, row.candles, found, params);
+      return papersFrom(row.symbol, interval, row.candles, found, params, busyUntil.get(`${row.symbol}|${interval}`) ?? -1);
     });
     const covered = board.rows.filter((row) => analyses.has(row.symbol)).map((row) => `${row.symbol}|${interval}`);
     const windowStart: Record<string, number> = {};
@@ -189,8 +211,8 @@ export function Desk() {
       const first = row.candles[0];
       if (first) windowStart[`${row.symbol}|${interval}`] = first.time;
     }
-    const prev = Array.isArray(useDesk.getState().journal) ? useDesk.getState().journal : [];
-    const next = mergeJournal(prev, fresh, covered, windowStart);
+    const base = prev.map((item) => carried.get(item.id) ?? item);
+    const next = mergeJournal(base, fresh, covered, windowStart);
     if (signature(prev) !== signature(next)) useDesk.getState().setJournal(next);
   }, [board, analyses, interval, params, statsRun]);
 

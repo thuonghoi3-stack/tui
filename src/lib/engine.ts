@@ -1049,7 +1049,7 @@ export function changePct(candles: Candle[], interval: Interval): number {
   return ((last - prev) / prev) * 100;
 }
 
-export function papersFrom(symbol: string, interval: Interval, candles: Candle[], analysis: Analysis, params: Params): Paper[] {
+export function papersFrom(symbol: string, interval: Interval, candles: Candle[], analysis: Analysis, params: Params, busyUntil = -1): Paper[] {
   const out: Paper[] = [];
   const flipAt = new Map<number, Side>();
   for (const marker of analysis.markers) {
@@ -1057,12 +1057,12 @@ export function papersFrom(symbol: string, interval: Interval, candles: Candle[]
     flipAt.set(marker.index, marker.side);
   }
   const signals = analysis.markers.filter((marker) => !marker.provisional && gatesOpen(marker, params)).sort((a, b) => a.index - b.index);
-  let busyUntil = -1;
+  let busy = busyUntil;
   for (const m of signals) {
     const signal = candles[m.index];
     if (!signal) continue;
     const entryIndex = m.index + 1;
-    if (entryIndex >= candles.length || entryIndex <= busyUntil) continue;
+    if (entryIndex >= candles.length || entryIndex <= busy) continue;
     const entry = candles[entryIndex].open;
     const entryTime = candles[entryIndex].time;
     if (!(entry > 0)) continue;
@@ -1117,7 +1117,7 @@ export function papersFrom(symbol: string, interval: Interval, candles: Candle[]
         }
       }
     }
-    busyUntil = exitIndex;
+    busy = exitIndex;
     const names = sessionsAt(signal.time);
     out.push({
       id: `${symbol}|${interval}|${signal.time}|${m.side}`,
@@ -1138,6 +1138,38 @@ export function papersFrom(symbol: string, interval: Interval, candles: Candle[]
     });
   }
   return out;
+}
+
+export function continueOpen(paper: Paper, candles: Candle[], analysis: Analysis, params: Params): { paper: Paper; busyUntil: number } {
+  if (paper.status !== "open") return { paper, busyUntil: -1 };
+  const flipAt = new Map<number, Side>();
+  for (const marker of analysis.markers) {
+    if (marker.provisional || !gatesOpen(marker, params)) continue;
+    flipAt.set(marker.index, marker.side);
+  }
+  for (let i = 0; i < candles.length; i += 1) {
+    const c = candles[i];
+    if (c.time < paper.entryTime) continue;
+    if (paper.side === "LONG") {
+      if (c.low <= paper.sl) return { paper: { ...paper, status: "sl", exit: paper.sl, exitTime: c.time }, busyUntil: i };
+      if (c.high >= paper.tp) return { paper: { ...paper, status: "tp", exit: paper.tp, exitTime: c.time }, busyUntil: i };
+    } else {
+      if (c.high >= paper.sl) return { paper: { ...paper, status: "sl", exit: paper.sl, exitTime: c.time }, busyUntil: i };
+      if (c.low <= paper.tp) return { paper: { ...paper, status: "tp", exit: paper.tp, exitTime: c.time }, busyUntil: i };
+    }
+    const flip = flipAt.get(i);
+    if (flip && flip !== paper.side) {
+      const fill = candles[i + 1];
+      const px = fill && fill.open > 0 ? fill.open : c.close;
+      if (px > 0) {
+        return {
+          paper: { ...paper, status: "reverse", exit: px, exitTime: fill && fill.open > 0 ? fill.time : c.time },
+          busyUntil: i,
+        };
+      }
+    }
+  }
+  return { paper, busyUntil: candles.length };
 }
 
 export function mergeJournal(prev: Paper[], fresh: Paper[], covered: string[] = [], windowStart: Record<string, number> = {}): Paper[] {
