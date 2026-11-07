@@ -2,7 +2,7 @@ import { createServerFn } from "@tanstack/react-start";
 import { analyze, clampParams, INTERVALS, papersFrom, pnlPct, type Candle, type Interval, type Params } from "@/lib/engine";
 
 export type BoardRow = { symbol: string; candles: Candle[]; error: string | null };
-export type Board = { rows: BoardRow[]; fetchedAt: number };
+export type Board = { rows: BoardRow[]; fetchedAt: number; interval: Interval };
 
 const cache = new Map<string, { at: number; candles: Candle[] }>();
 const TTL_MS = 15_000;
@@ -103,7 +103,7 @@ export const fetchBoard = createServerFn({ method: "POST" })
       }
     });
     await Promise.all(workers);
-    return { rows, fetchedAt: Date.now() } satisfies Board;
+    return { rows, fetchedAt: Date.now(), interval: data.interval } satisfies Board;
   });
 
 const BAR_MS: Record<Interval, number> = { "5m": 300_000, "15m": 900_000, "30m": 1_800_000, "1h": 3_600_000, "4h": 14_400_000 };

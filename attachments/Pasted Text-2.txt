@@ -1,0 +1,815 @@
+// -------------------------------------------------
+// Take Profit Planner [AGPro Series]
+//
+// Author  : AGProLabs | AGPro Series
+// Version : 1.5
+//
+// Take Profit Planner is a target-management decision engine for TradingView.
+// It builds a multi-tier TP ladder, highlights the active entry reference,
+// reviews the path toward the nearest target, scores target quality from 0 to
+// 100, tracks current R progress, runs an empirical stop-aware target proof
+// rate, and converts the output into a clean next action state for structured
+// take-profit planning.
+// -------------------------------------------------
+
+//@version=6
+indicator("Take Profit Planner [AGPro Series]",
+     shorttitle = "AG Pro TP",
+     overlay = true,
+     max_boxes_count = 120,
+     max_lines_count = 120,
+     max_labels_count = 250)
+
+// -------------------------------------------------
+// AGPro Color Palette
+// -------------------------------------------------
+color headerBg      = color.rgb(37, 99, 235)
+color headerText    = color.rgb(245, 247, 250)
+color panelBg       = color.rgb(15, 23, 42)
+color panelBorder   = color.rgb(51, 65, 85)
+color panelLabelCol = color.rgb(148, 163, 184)
+color panelValueCol = color.rgb(226, 232, 240)
+color bullColor     = color.rgb(34, 197, 166)
+color bearColor     = color.rgb(244, 114, 182)
+color neutralColor  = color.rgb(245, 189, 92)
+color accentColor   = color.rgb(129, 140, 248)
+color dangerColor   = color.rgb(239, 68, 68)
+
+// -------------------------------------------------
+// Tooltips
+// -------------------------------------------------
+string ttPlanDirection = "Selects the management side. Auto reads pivot context first, then trend context. Manual side keeps the target planner fixed to long-side or short-side review."
+string ttCalcMode = "Selects how TP levels are calculated. Fibonacci uses extension levels, R-Multiples uses stop distance, and Hybrid blends both while scoring confluence."
+string ttAnchorMode = "Selects the plan anchor. Manual uses user prices. Auto Pivot uses the latest confirmed pivot structure. Auto Swing Range uses recent high-low context."
+string ttPivot = "Bars on each side required to confirm pivot anchors. Higher values produce slower but cleaner anchor updates."
+string ttManualEntry = "Manual entry reference used only when Anchor Source is Manual Price."
+string ttManualSwing = "Manual swing or origin reference used only when Anchor Source is Manual Price."
+string ttManualStop = "Manual invalidation reference used only when Anchor Source is Manual Price."
+string ttStopMode = "Auto invalidation method used outside Manual Price mode. ATR Multiple adapts to volatility, Swing Point uses the opposite pivot, and Fixed Percent uses a fixed distance from the entry reference."
+string ttAtr = "ATR length used for target bands, target quality, label offsets, obstruction distance, current R normalization and volatility context."
+string ttAtrBase = "Longer ATR baseline used to classify volatility as quiet, constructive, or overheated for the target path."
+string ttTrend = "EMA length used to evaluate whether the active target path has trend support. It is a context filter, not an entry signal."
+string ttTierCount = "Number of TP tiers to show in the ladder. Default 5 keeps the public chart informative without overloading it."
+string ttFib = "Fibonacci extension multiplier for this TP tier."
+string ttR = "R-multiple target for this TP tier, based on distance from entry reference to invalidation reference."
+string ttAlloc = "Position allocation reference for this TP tier. It is displayed for planning context only and does not automate orders."
+string ttSensitivity = "Controls how strict the quality score is. Conservative requires cleaner target paths, Reactive responds faster to developing paths."
+string ttLookback = "Lookback used to find path obstructions between current price and the nearest active TP."
+string ttNear = "ATR buffer used to mark a TP as tagged or near. This avoids treating tiny price differences as separate states."
+string ttIdeal = "Preferred ATR distance to the nearest active target. Targets too close or too far score lower."
+string ttMaxTarget = "Upper ATR distance where the target path becomes less practical for near-term management."
+string ttHotVol = "ATR ratio above this value is treated as overheated volatility and lowers target quality."
+string ttReady = "Minimum 0-100 score required for Target Ready. This is an attention state, not a trade instruction."
+string ttWatch = "Minimum 0-100 score required for Monitor state."
+string ttVisualMode = "Clean Ladder makes the entry reference and TP ladder easier to read. Planner restores the richer V1.2 target-path view. Manual follows the individual visual toggles below."
+string ttEntryEmphasis = "Controls how strongly the entry reference is displayed. Strong adds a clearer entry badge and guide line for easier first-glance reading."
+string ttShowPath = "Shows the target path box from current price to the nearest active TP when Visual Mode allows it."
+string ttShowZones = "Shows TP zones around each target level. If disabled, the script uses dashed target lines."
+string ttZoneWidth = "Vertical half-thickness of each TP zone in ATR units."
+string ttShowEntry = "Shows the entry reference line used by the planner."
+string ttShowStop = "Shows the invalidation reference zone used for current R and review states."
+string ttShowObstacle = "Shows the nearest obstruction rail only when a recent swing obstacle is located between current price and the nearest active TP."
+string ttProjection = "Number of bars projected to the right for TP zones, path box, rails and labels."
+string ttOpacity = "Transparency for target path and TP zones. Higher values make zones lighter."
+string ttLabels = "Shows TP, entry, invalidation and event labels. Labels are offset away from candles and capped for performance."
+string ttContext = "Adds sparse target-path context labels so public screenshots do not look empty while avoiding chart clutter."
+string ttCooldown = "Minimum bars between event labels. Higher values reduce chart noise."
+string ttContextSpacing = "Minimum bars between sparse context labels."
+string ttMaxLabels = "Maximum number of event labels retained on the chart. Older labels are removed first."
+string ttLabelOffset = "ATR-based label offset used to keep labels above or below candles."
+string ttLabelScore = "Adds the 0-100 target quality score to event and context labels."
+string ttLabelSize = "Font size for chart labels and centered box text. Normal is the recommended publication default."
+string ttPanel = "Shows or hides the AG Pro panel. It is enabled by default for public-release readability."
+string ttPanelLocation = "Moves the panel to the preferred chart location."
+string ttPanelTheme = "Switches the panel between AGPro dark and clean light themes."
+string ttPanelFont = "Controls panel text size. Normal is the recommended publication default."
+string ttProofWindow = "Maximum bars a target proof window stays open before it is left uncounted in the proof rate."
+
+// -------------------------------------------------
+// Inputs
+// -------------------------------------------------
+string groupEngine = "Target Engine"
+string planDirection = input.string("Auto", "Plan Direction", options = ["Auto", "Long Plan", "Short Plan"], group = groupEngine, tooltip = ttPlanDirection)
+string calcMode = input.string("Hybrid Confluence", "Calculation Mode", options = ["Fibonacci Extensions", "R-Multiples", "Hybrid Confluence"], group = groupEngine, tooltip = ttCalcMode)
+string anchorMode = input.string("Auto - Pivot High/Low", "Anchor Source", options = ["Manual Price", "Auto - Pivot High/Low", "Auto - Recent Swing Range"], group = groupEngine, tooltip = ttAnchorMode)
+int pivotLen = input.int(10, "Pivot Length", minval = 2, maxval = 50, group = groupEngine, tooltip = ttPivot)
+int atrLen = input.int(14, "ATR Length", minval = 2, maxval = 100, group = groupEngine, tooltip = ttAtr)
+int atrBaseLen = input.int(55, "ATR Context Baseline", minval = 10, maxval = 300, group = groupEngine, tooltip = ttAtrBase)
+int trendLen = input.int(34, "Trend Context Length", minval = 5, maxval = 200, group = groupEngine, tooltip = ttTrend)
+
+string groupAnchor = "Anchor and Invalidation"
+float manualEntry = input.price(0.0, "Manual Entry Price", group = groupAnchor, tooltip = ttManualEntry)
+float manualSwing = input.price(0.0, "Manual Swing / Origin Price", group = groupAnchor, tooltip = ttManualSwing)
+float manualStop = input.price(0.0, "Manual Invalidation Price", group = groupAnchor, tooltip = ttManualStop)
+string stopMode = input.string("ATR Multiple", "Auto Invalidation Mode", options = ["ATR Multiple", "Swing Point", "Fixed Percent"], group = groupAnchor, tooltip = ttStopMode)
+float atrMult = input.float(1.50, "ATR Multiple", minval = 0.10, maxval = 10.00, step = 0.05, group = groupAnchor, tooltip = "Multiplier applied to ATR when Auto Invalidation Mode is ATR Multiple.")
+float stopPct = input.float(1.50, "Fixed Percent", minval = 0.10, maxval = 20.00, step = 0.10, group = groupAnchor, tooltip = "Fixed percent distance from the entry reference when Auto Invalidation Mode is Fixed Percent.")
+
+string groupTiers = "TP Ladder"
+int tierCount = input.int(5, "Number of TP Tiers", minval = 2, maxval = 7, group = groupTiers, tooltip = ttTierCount)
+float fib1 = input.float(1.272, "Fib TP1", minval = 0.500, step = 0.001, group = groupTiers, inline = "fib1", tooltip = ttFib)
+float fib2 = input.float(1.414, "Fib TP2", minval = 0.500, step = 0.001, group = groupTiers, inline = "fib2", tooltip = ttFib)
+float fib3 = input.float(1.618, "Fib TP3", minval = 0.500, step = 0.001, group = groupTiers, inline = "fib3", tooltip = ttFib)
+float fib4 = input.float(2.000, "Fib TP4", minval = 0.500, step = 0.001, group = groupTiers, inline = "fib4", tooltip = ttFib)
+float fib5 = input.float(2.618, "Fib TP5", minval = 0.500, step = 0.001, group = groupTiers, inline = "fib5", tooltip = ttFib)
+float fib6 = input.float(3.618, "Fib TP6", minval = 0.500, step = 0.001, group = groupTiers, inline = "fib6", tooltip = ttFib)
+float fib7 = input.float(4.236, "Fib TP7", minval = 0.500, step = 0.001, group = groupTiers, inline = "fib7", tooltip = ttFib)
+float r1 = input.float(1.0, "R TP1", minval = 0.10, step = 0.10, group = groupTiers, inline = "r1", tooltip = ttR)
+float r2 = input.float(2.0, "R TP2", minval = 0.10, step = 0.10, group = groupTiers, inline = "r2", tooltip = ttR)
+float r3 = input.float(3.0, "R TP3", minval = 0.10, step = 0.10, group = groupTiers, inline = "r3", tooltip = ttR)
+float r4 = input.float(5.0, "R TP4", minval = 0.10, step = 0.10, group = groupTiers, inline = "r4", tooltip = ttR)
+float r5 = input.float(8.0, "R TP5", minval = 0.10, step = 0.10, group = groupTiers, inline = "r5", tooltip = ttR)
+float r6 = input.float(13.0, "R TP6", minval = 0.10, step = 0.10, group = groupTiers, inline = "r6", tooltip = ttR)
+float r7 = input.float(21.0, "R TP7", minval = 0.10, step = 0.10, group = groupTiers, inline = "r7", tooltip = ttR)
+
+string groupAlloc = "Position Allocation"
+float alloc1 = input.float(20, "Alloc TP1 %", minval = 0, maxval = 100, step = 1, group = groupAlloc, inline = "a1", tooltip = ttAlloc)
+float alloc2 = input.float(20, "Alloc TP2 %", minval = 0, maxval = 100, step = 1, group = groupAlloc, inline = "a2", tooltip = ttAlloc)
+float alloc3 = input.float(25, "Alloc TP3 %", minval = 0, maxval = 100, step = 1, group = groupAlloc, inline = "a3", tooltip = ttAlloc)
+float alloc4 = input.float(20, "Alloc TP4 %", minval = 0, maxval = 100, step = 1, group = groupAlloc, inline = "a4", tooltip = ttAlloc)
+float alloc5 = input.float(15, "Alloc TP5 %", minval = 0, maxval = 100, step = 1, group = groupAlloc, inline = "a5", tooltip = ttAlloc)
+float alloc6 = input.float(0, "Alloc TP6 %", minval = 0, maxval = 100, step = 1, group = groupAlloc, inline = "a6", tooltip = ttAlloc)
+float alloc7 = input.float(0, "Alloc TP7 %", minval = 0, maxval = 100, step = 1, group = groupAlloc, inline = "a7", tooltip = ttAlloc)
+
+string groupQuality = "Target Quality"
+string sensitivity = input.string("Balanced", "Sensitivity", options = ["Conservative", "Balanced", "Reactive"], group = groupQuality, tooltip = ttSensitivity)
+int obstructionLookback = input.int(80, "Obstruction Lookback", minval = 10, maxval = 300, group = groupQuality, tooltip = ttLookback)
+float tagBufferAtr = input.float(0.20, "Tagged Target Buffer ATR", minval = 0.02, maxval = 1.50, step = 0.01, group = groupQuality, tooltip = ttNear)
+float minTargetAtr = input.float(0.65, "Minimum Useful Target ATR", minval = 0.10, maxval = 5.00, step = 0.05, group = groupQuality, tooltip = "Targets closer than this usually provide weak planning value.")
+float idealTargetAtr = input.float(2.40, "Ideal Target Distance ATR", minval = 0.30, maxval = 10.00, step = 0.05, group = groupQuality, tooltip = ttIdeal)
+float maxTargetAtr = input.float(6.50, "Maximum Practical Target ATR", minval = 1.00, maxval = 20.00, step = 0.10, group = groupQuality, tooltip = ttMaxTarget)
+float hotAtrRatio = input.float(2.25, "Hot Volatility Ratio", minval = 1.10, maxval = 5.00, step = 0.05, group = groupQuality, tooltip = ttHotVol)
+int readyThreshold = input.int(72, "Target Ready Threshold", minval = 45, maxval = 95, group = groupQuality, tooltip = ttReady)
+int watchThreshold = input.int(54, "Monitor Threshold", minval = 20, maxval = 90, group = groupQuality, tooltip = ttWatch)
+
+string groupVisual = "Chart Visuals"
+string visualMode = input.string("Clean Ladder", "Visual Mode", options = ["Clean Ladder", "Planner", "Manual"], group = groupVisual, tooltip = ttVisualMode)
+string entryEmphasis = input.string("Strong", "Entry Emphasis", options = ["Minimal", "Normal", "Strong"], group = groupVisual, tooltip = ttEntryEmphasis)
+bool showTargetPath = input.bool(true, "Show Target Path Box", group = groupVisual, tooltip = ttShowPath)
+bool showZones = input.bool(true, "Show TP Zones", group = groupVisual, tooltip = ttShowZones)
+float zoneWidthAtr = input.float(0.24, "TP Zone Half-Width ATR", minval = 0.03, maxval = 2.00, step = 0.01, group = groupVisual, tooltip = ttZoneWidth)
+bool showEntry = input.bool(true, "Show Entry Reference", group = groupVisual, tooltip = ttShowEntry)
+bool showInvalidation = input.bool(true, "Show Invalidation Reference", group = groupVisual, tooltip = ttShowStop)
+bool showObstructionRail = input.bool(true, "Show Obstruction Rail", group = groupVisual, tooltip = ttShowObstacle)
+int projectionBars = input.int(54, "Projection Bars", minval = 12, maxval = 240, group = groupVisual, tooltip = ttProjection)
+int zoneTransparency = input.int(88, "Zone Transparency", minval = 70, maxval = 96, group = groupVisual, tooltip = ttOpacity)
+
+string groupLabels = "Labels"
+bool showLabels = input.bool(true, "Show Labels", group = groupLabels, tooltip = ttLabels)
+bool showContextLabels = input.bool(true, "Show Sparse Context Labels", group = groupLabels, tooltip = ttContext)
+int labelCooldownBars = input.int(20, "Label Cooldown Bars", minval = 2, maxval = 120, group = groupLabels, tooltip = ttCooldown)
+int contextSpacingBars = input.int(72, "Context Label Spacing", minval = 8, maxval = 180, group = groupLabels, tooltip = ttContextSpacing)
+int maxVisibleLabels = input.int(12, "Max Visible Event Labels", minval = 5, maxval = 100, group = groupLabels, tooltip = ttMaxLabels)
+float labelOffsetAtr = input.float(0.85, "Label Offset ATR", minval = 0.10, maxval = 3.00, step = 0.05, group = groupLabels, tooltip = ttLabelOffset)
+bool showLabelScore = input.bool(true, "Show Label Score", group = groupLabels, tooltip = ttLabelScore)
+string labelFontSize = input.string("Normal", "Label Font Size", options = ["Tiny", "Small", "Normal", "Large"], group = groupLabels, tooltip = ttLabelSize)
+
+string groupPanel = "Panel"
+bool showPanel = input.bool(true, "Show Panel", group = groupPanel, tooltip = ttPanel)
+string panelLocation = input.string("Top Right", "Panel Location", options = ["Top Left", "Top Center", "Top Right", "Middle Left", "Middle Center", "Middle Right", "Bottom Left", "Bottom Center", "Bottom Right"], group = groupPanel, tooltip = ttPanelLocation)
+string panelTheme = input.string("Dark", "Panel Theme", options = ["Dark", "Light"], group = groupPanel, tooltip = ttPanelTheme)
+string panelFontSize = input.string("Normal", "Panel Font Size", options = ["Tiny", "Small", "Normal", "Large"], group = groupPanel, tooltip = ttPanelFont)
+
+string groupAlerts = "Alerts"
+bool alertReady = input.bool(true, "Alert On Target Ready", group = groupAlerts, tooltip = "Triggers when the nearest target path reaches the Target Ready state.")
+bool alertStateShift = input.bool(true, "Alert On State Shift", group = groupAlerts, tooltip = "Triggers when the planner moves into a new target-management state.")
+bool alertTargetTagged = input.bool(true, "Alert On Target Tagged", group = groupAlerts, tooltip = "Triggers when a TP level is tagged within the configured ATR buffer.")
+bool alertInvalidation = input.bool(true, "Alert On Invalidation Review", group = groupAlerts, tooltip = "Triggers when price reaches the invalidation review area.")
+int proofWindowBars = input.int(60, "Proof Window Bars", minval = 10, maxval = 400, group = groupAlerts, tooltip = ttProofWindow)
+
+// -------------------------------------------------
+// Helpers
+// -------------------------------------------------
+f_clamp(float value, float minValue, float maxValue) =>
+    math.min(math.max(value, minValue), maxValue)
+
+// Luminance-based contrast: dark ink on bright fills, light ink on dark fills.
+f_text_on(color bg) =>
+    float lum = 0.299 * color.r(bg) + 0.587 * color.g(bg) + 0.114 * color.b(bg)
+    lum > 145 ? color.rgb(17, 24, 39) : headerText
+
+// Vertical anti-collision: nudge a new label away from nearby existing labels.
+f_avoid_overlap(array<label> labels, float desiredY, bool placeAbove, float safe) =>
+    float y = desiredY
+    float minGap = safe * 1.2
+    int n = array.size(labels)
+    if n > 0
+        bool moved = true
+        int guard = 0
+        while moved and guard < 18
+            moved := false
+            for i = 0 to n - 1
+                label lb = array.get(labels, i)
+                if math.abs(label.get_x(lb) - bar_index) <= 26
+                    if math.abs(label.get_y(lb) - y) < minGap
+                        y := placeAbove ? y + minGap : y - minGap
+                        moved := true
+            guard += 1
+    y
+
+f_norm_high_good(float value, float weak, float strong) =>
+    float span = strong - weak
+    span == 0.0 ? 0.0 : f_clamp((value - weak) / span * 100.0, 0.0, 100.0)
+
+f_norm_low_good(float value, float good, float bad) =>
+    float span = bad - good
+    span == 0.0 ? 0.0 : f_clamp((bad - value) / span * 100.0, 0.0, 100.0)
+
+f_peak_score(float value, float lowValue, float idealValue, float highValue) =>
+    float result = 0.0
+    if value <= idealValue
+        result := f_norm_high_good(value, lowValue, idealValue)
+    else
+        result := f_norm_low_good(value, idealValue, highValue)
+    result
+
+f_text_size(string sizeText) =>
+    switch sizeText
+        "Tiny" => size.tiny
+        "Small" => size.small
+        "Large" => size.large
+        => size.normal
+
+f_panel_position(string posText) =>
+    switch posText
+        "Top Left" => position.top_left
+        "Top Center" => position.top_center
+        "Top Right" => position.top_right
+        "Middle Left" => position.middle_left
+        "Middle Center" => position.middle_center
+        "Middle Right" => position.middle_right
+        "Bottom Left" => position.bottom_left
+        "Bottom Center" => position.bottom_center
+        => position.bottom_right
+
+f_panel_bg(string theme) =>
+    theme == "Light" ? color.rgb(241, 245, 249) : panelBg
+
+f_panel_border(string theme) =>
+    theme == "Light" ? color.rgb(148, 163, 184) : panelBorder
+
+f_panel_label(string theme) =>
+    theme == "Light" ? color.rgb(71, 85, 105) : panelLabelCol
+
+f_panel_value(string theme) =>
+    theme == "Light" ? color.rgb(15, 23, 42) : panelValueCol
+
+f_row_bg(string theme, int row) =>
+    bool evenRow = row % 2 == 0
+    if theme == "Light"
+        evenRow ? color.rgb(226, 232, 240) : color.rgb(241, 245, 249)
+    else
+        evenRow ? color.rgb(15, 23, 42) : color.rgb(30, 41, 59)
+
+f_fmt_price(float price) =>
+    na(price) ? "n/a" : str.tostring(price, format.mintick)
+
+f_quality_grade(int score) =>
+    score >= 85 ? "A+" : score >= 75 ? "A" : score >= 65 ? "B" : score >= 50 ? "C" : "D"
+
+f_round_unit(float price) =>
+    float p = math.abs(price)
+    p >= 10000.0 ? 1000.0 :
+     p >= 1000.0 ? 100.0 :
+     p >= 100.0 ? 10.0 :
+     p >= 10.0 ? 1.0 :
+     p >= 1.0 ? 0.10 :
+     p >= 0.10 ? 0.01 :
+     p >= 0.01 ? 0.001 : 0.0001
+
+f_get_fib(int tier) =>
+    switch tier
+        1 => fib1
+        2 => fib2
+        3 => fib3
+        4 => fib4
+        5 => fib5
+        6 => fib6
+        7 => fib7
+        => fib1
+
+f_get_r(int tier) =>
+    switch tier
+        1 => r1
+        2 => r2
+        3 => r3
+        4 => r4
+        5 => r5
+        6 => r6
+        7 => r7
+        => r1
+
+f_get_alloc(int tier) =>
+    switch tier
+        1 => alloc1
+        2 => alloc2
+        3 => alloc3
+        4 => alloc4
+        5 => alloc5
+        6 => alloc6
+        7 => alloc7
+        => 0.0
+
+f_clear_boxes(array<box> boxes) =>
+    while array.size(boxes) > 0
+        box oldBox = array.pop(boxes)
+        box.delete(oldBox)
+
+f_clear_lines(array<line> lines) =>
+    while array.size(lines) > 0
+        line oldLine = array.pop(lines)
+        line.delete(oldLine)
+
+f_clear_labels(array<label> labels) =>
+    while array.size(labels) > 0
+        label oldLabel = array.pop(labels)
+        label.delete(oldLabel)
+
+f_trim_labels(array<label> labels, int maxCount) =>
+    while array.size(labels) > maxCount
+        label oldLabel = array.shift(labels)
+        label.delete(oldLabel)
+
+// -------------------------------------------------
+// Anchor and target engine
+// -------------------------------------------------
+float atr = ta.atr(atrLen)
+float safeAtr = math.max(nz(atr, ta.tr(true)), syminfo.mintick)
+float atrBase = ta.sma(atr, atrBaseLen)
+float atrRatio = safeAtr / math.max(nz(atrBase, safeAtr), syminfo.mintick)
+float trendFast = ta.ema(close, trendLen)
+float trendSlow = ta.ema(close, trendLen * 2)
+float rangeHigh = ta.highest(high, obstructionLookback)
+float rangeLow = ta.lowest(low, obstructionLookback)
+float rangeMid = (rangeHigh + rangeLow) * 0.5
+float rangeProxy = math.max(ta.highest(high, 90) - ta.lowest(low, 90), safeAtr * 8.0)
+
+var float lastPivotHigh = na
+var float lastPivotLow = na
+var int lastPivotHighBar = na
+var int lastPivotLowBar = na
+
+float pivotHigh = ta.pivothigh(high, pivotLen, pivotLen)
+float pivotLow = ta.pivotlow(low, pivotLen, pivotLen)
+
+if not na(pivotHigh)
+    lastPivotHigh := pivotHigh
+    lastPivotHighBar := bar_index - pivotLen
+
+if not na(pivotLow)
+    lastPivotLow := pivotLow
+    lastPivotLowBar := bar_index - pivotLen
+
+bool havePivots = not na(lastPivotHigh) and not na(lastPivotLow)
+int pivotContextDir = havePivots ? (close >= (lastPivotHigh + lastPivotLow) * 0.5 ? 1 : -1) : (close >= trendFast ? 1 : -1)
+int directionOverride = planDirection == "Long Plan" ? 1 : planDirection == "Short Plan" ? -1 : 0
+int autoDirection = planDirection == "Auto" ? pivotContextDir : directionOverride
+
+float entryPx = na
+float swingPx = na
+float invalidPx = na
+int planDir = na
+
+if anchorMode == "Manual Price"
+    bool manualDirReady = manualEntry > 0 and manualSwing > 0
+    planDir := directionOverride != 0 ? directionOverride : manualDirReady ? (manualEntry >= manualSwing ? 1 : -1) : na
+    entryPx := manualEntry > 0 ? manualEntry : na
+    swingPx := manualSwing > 0 ? manualSwing : na
+    invalidPx := manualStop > 0 ? manualStop : na
+else if anchorMode == "Auto - Pivot High/Low"
+    planDir := autoDirection
+    entryPx := close
+    swingPx := planDir == 1 ? lastPivotLow : lastPivotHigh
+else
+    planDir := directionOverride != 0 ? directionOverride : close >= rangeMid ? 1 : -1
+    entryPx := close
+    swingPx := planDir == 1 ? rangeLow : rangeHigh
+
+if anchorMode != "Manual Price" and not na(entryPx) and not na(swingPx) and not na(planDir)
+    if stopMode == "ATR Multiple"
+        invalidPx := planDir == 1 ? entryPx - safeAtr * atrMult : entryPx + safeAtr * atrMult
+    else if stopMode == "Swing Point"
+        invalidPx := swingPx
+    else
+        invalidPx := planDir == 1 ? entryPx * (1.0 - stopPct / 100.0) : entryPx * (1.0 + stopPct / 100.0)
+
+bool validBase = not na(entryPx) and not na(swingPx) and not na(invalidPx) and not na(planDir) and entryPx > 0 and math.abs(entryPx - invalidPx) > syminfo.mintick
+float legSize = validBase ? math.abs(entryPx - swingPx) : na
+float riskSize = validBase ? math.abs(entryPx - invalidPx) : na
+float dirMult = planDir == 1 ? 1.0 : -1.0
+
+f_compute_tp(int tier) =>
+    float priceOut = na
+    if validBase
+        float fibTarget = entryPx + dirMult * legSize * math.max(f_get_fib(tier) - 1.0, 0.0)
+        float rTarget = entryPx + dirMult * riskSize * f_get_r(tier)
+        if calcMode == "Fibonacci Extensions"
+            priceOut := fibTarget
+        else if calcMode == "R-Multiples"
+            priceOut := rTarget
+        else
+            priceOut := (fibTarget + rTarget) * 0.5
+        if priceOut <= syminfo.mintick
+            priceOut := na
+    priceOut
+
+float recentHighObstacle = ta.highest(high[1], obstructionLookback)
+float recentLowObstacle = ta.lowest(low[1], obstructionLookback)
+
+f_confluence(float targetPx) =>
+    int score = 1
+    if not na(targetPx)
+        float unit = f_round_unit(targetPx)
+        float rounded = math.round(targetPx / unit) * unit
+        if math.abs(targetPx - rounded) <= safeAtr * 0.18
+            score += 1
+        float nearSwing = planDir == 1 ? recentHighObstacle : recentLowObstacle
+        if not na(nearSwing) and math.abs(targetPx - nearSwing) <= safeAtr * 0.35
+            score += 1
+    math.min(score, 3)
+
+var array<float> tpPx = array.from(float(na), float(na), float(na), float(na), float(na), float(na), float(na))
+var array<int> tpScore = array.from(1, 1, 1, 1, 1, 1, 1)
+var array<bool> tpHit = array.from(false, false, false, false, false, false, false)
+var bool invalidationTagged = false
+var int hitCount = 0
+var float lastEntry = na
+var float lastInvalid = na
+var int lastPlanDir = 0
+
+for i = 1 to 7
+    float targetPx = f_compute_tp(i)
+    array.set(tpPx, i - 1, targetPx)
+    array.set(tpScore, i - 1, f_confluence(targetPx))
+
+bool anchorChanged = validBase and (na(lastEntry) or math.abs(entryPx - lastEntry) / safeAtr > 0.75 or math.abs(invalidPx - nz(lastInvalid, invalidPx)) / safeAtr > 0.75 or planDir != lastPlanDir)
+
+if anchorChanged
+    for i = 0 to 6
+        array.set(tpHit, i, false)
+    invalidationTagged := false
+    hitCount := 0
+    lastEntry := entryPx
+    lastInvalid := invalidPx
+    lastPlanDir := planDir
+
+bool confirmedBar = barstate.isconfirmed
+
+if validBase and confirmedBar
+    for i = 1 to tierCount
+        float targetPx = array.get(tpPx, i - 1)
+        bool targetTouched = not na(targetPx) and (planDir == 1 ? high >= targetPx - safeAtr * tagBufferAtr : low <= targetPx + safeAtr * tagBufferAtr)
+        if targetTouched and not array.get(tpHit, i - 1)
+            array.set(tpHit, i - 1, true)
+    bool invalidTouched = planDir == 1 ? low <= invalidPx + safeAtr * tagBufferAtr : high >= invalidPx - safeAtr * tagBufferAtr
+    if invalidTouched
+        invalidationTagged := true
+
+int activeHitCount = 0
+for i = 1 to tierCount
+    if array.get(tpHit, i - 1)
+        activeHitCount += 1
+hitCount := activeHitCount
+
+int nearestTier = 0
+float nearestTp = na
+int nearestConf = 1
+for i = 1 to tierCount
+    if nearestTier == 0 and not array.get(tpHit, i - 1)
+        nearestTier := i
+        nearestTp := array.get(tpPx, i - 1)
+        nearestConf := array.get(tpScore, i - 1)
+
+if nearestTier == 0 and tierCount > 0
+    nearestTier := tierCount
+    nearestTp := array.get(tpPx, tierCount - 1)
+    nearestConf := array.get(tpScore, tierCount - 1)
+
+bool validPlan = validBase and not na(nearestTp) and riskSize > syminfo.mintick
+float currentR = validPlan ? (planDir == 1 ? (close - entryPx) / riskSize : (entryPx - close) / riskSize) : na
+float nearestR = validPlan ? math.abs(nearestTp - entryPx) / riskSize : na
+float distanceToTargetAtr = validPlan ? math.abs(nearestTp - close) / safeAtr : na
+float targetSpan = validPlan ? math.abs(nearestTp - close) : na
+float targetProgress = validPlan ? f_clamp(math.abs(close - entryPx) / math.max(math.abs(nearestTp - entryPx), syminfo.mintick) * 100.0, 0.0, 160.0) : na
+
+float obstaclePx = validPlan ? (planDir == 1 ? recentHighObstacle : recentLowObstacle) : na
+float pathLow = validPlan ? math.min(close, nearestTp) : na
+float pathHigh = validPlan ? math.max(close, nearestTp) : na
+bool obstructionInPath = validPlan and not na(obstaclePx) and obstaclePx > pathLow + safeAtr * tagBufferAtr and obstaclePx < pathHigh - safeAtr * tagBufferAtr
+float obstacleShare = obstructionInPath ? math.abs(obstaclePx - close) / math.max(targetSpan, syminfo.mintick) : 1.0
+
+float distanceScore = validPlan ? f_peak_score(distanceToTargetAtr, minTargetAtr, idealTargetAtr, maxTargetAtr) : 0.0
+float obstructionScore = obstructionInPath ? f_norm_high_good(obstacleShare, 0.20, 0.85) : 100.0
+float trendScore = validPlan ? (planDir == 1 ? (close >= trendFast and trendFast >= trendSlow ? 100.0 : close >= trendFast ? 72.0 : 42.0) : (close <= trendFast and trendFast <= trendSlow ? 100.0 : close <= trendFast ? 72.0 : 42.0)) : 0.0
+float progressScore = validPlan ? (currentR < -0.35 ? 18.0 : currentR < 0.0 ? 44.0 : targetProgress <= 92.0 ? 84.0 : 66.0) : 0.0
+float volatilityScore = validPlan ? f_peak_score(atrRatio, 0.55, 1.10, hotAtrRatio) : 0.0
+float confluenceScore = f_norm_high_good(nearestConf, 1.0, 3.0)
+float sensitivityOffset = sensitivity == "Conservative" ? -4.0 : sensitivity == "Reactive" ? 4.0 : 0.0
+float qualityRaw = distanceScore * 0.22 + obstructionScore * 0.24 + trendScore * 0.18 + progressScore * 0.14 + volatilityScore * 0.12 + confluenceScore * 0.10 + sensitivityOffset
+int targetQuality = int(math.round(f_clamp(qualityRaw, 0.0, 100.0)))
+int readyScore = sensitivity == "Conservative" ? readyThreshold + 3 : sensitivity == "Reactive" ? readyThreshold - 3 : readyThreshold
+int monitorScore = sensitivity == "Conservative" ? watchThreshold + 3 : sensitivity == "Reactive" ? watchThreshold - 3 : watchThreshold
+
+bool targetNear = validPlan and distanceToTargetAtr <= tagBufferAtr * 1.50
+bool planComplete = validPlan and hitCount >= tierCount
+bool invalidReview = validPlan and invalidationTagged
+
+string planState = "WAIT"
+if validPlan
+    if invalidReview
+        planState := "INVALID REVIEW"
+    else if planComplete
+        planState := "PLAN COMPLETE"
+    else if targetNear
+        planState := "TARGET NEAR"
+    else if obstructionInPath and targetQuality < readyScore
+        planState := "BLOCKED"
+    else if targetQuality >= readyScore
+        planState := "TARGET READY"
+    else if targetQuality >= monitorScore
+        planState := "MONITOR"
+    else
+        planState := "LOW QUALITY"
+
+color stateColor = switch planState
+    "TARGET READY" => planDir == 1 ? bullColor : bearColor
+    "MONITOR" => accentColor
+    "TARGET NEAR" => neutralColor
+    "BLOCKED" => neutralColor
+    "PLAN COMPLETE" => bullColor
+    "INVALID REVIEW" => dangerColor
+    "LOW QUALITY" => panelLabelCol
+    => panelLabelCol
+
+string actionText = switch planState
+    "TARGET READY" => "Manage Nearest TP"
+    "MONITOR" => "Monitor Ladder"
+    "TARGET NEAR" => "Review Partial State"
+    "BLOCKED" => "Review Obstruction"
+    "PLAN COMPLETE" => "Reset Or Archive"
+    "INVALID REVIEW" => "Review Invalidation"
+    "LOW QUALITY" => "Wait For Cleaner Path"
+    => "Waiting For Plan"
+
+string sideText = planDir == 1 ? "LONG" : planDir == -1 ? "SHORT" : "WAIT"
+string nearestRead = validPlan ? "TP" + str.tostring(nearestTier) + " NEXT | " + f_fmt_price(nearestTp) : "Waiting"
+string qualityRead = validPlan ? str.tostring(targetQuality) + " / 100 " + f_quality_grade(targetQuality) + " | " + planState : "Waiting"
+string obstructionRead = validPlan ? (obstructionInPath ? f_fmt_price(obstaclePx) + " | " + str.tostring(obstacleShare * 100.0, "#") + "% PATH" : "Clean path") : "Waiting"
+string currentRRead = validPlan ? (currentR >= 0 ? "+" : "") + str.tostring(currentR, "#.##") + "R | TP" + str.tostring(nearestTier) + " " + str.tostring(nearestR, "#.##") + "R" : "Waiting"
+
+// -------------------------------------------------
+// Stop-aware target proof (confirmed-bar gated)
+// On each new anchor, measure whether TP1 is reached before invalidation.
+// -------------------------------------------------
+var int proofTotal = 0
+var int proofWins = 0
+var bool proofPending = false
+var int proofDir = 0
+var float proofTp1 = na
+var float proofInvalid = na
+var int proofStartBar = na
+
+if confirmedBar
+    if proofPending
+        bool tpReached = proofDir == 1 ? high >= proofTp1 : low <= proofTp1
+        bool invReached = proofDir == 1 ? low <= proofInvalid : high >= proofInvalid
+        bool resolved = false
+        if invReached
+            proofTotal += 1
+            resolved := true
+        else if tpReached
+            proofWins += 1
+            proofTotal += 1
+            resolved := true
+        if not resolved and not na(proofStartBar) and bar_index - proofStartBar >= proofWindowBars
+            resolved := true
+        if resolved
+            proofPending := false
+    float firstTp = array.get(tpPx, 0)
+    if not proofPending and anchorChanged and validBase and not na(firstTp) and not na(invalidPx)
+        proofPending := true
+        proofDir := planDir
+        proofTp1 := firstTp
+        proofInvalid := invalidPx
+        proofStartBar := bar_index
+
+bool proofReady = proofTotal >= 6
+int proofRate = proofReady ? int(math.round(f_clamp(proofWins / proofTotal * 100.0, 0.0, 100.0))) : na
+string proofRead = proofReady ? str.tostring(proofRate) + "%  (" + str.tostring(proofTotal) + ")" : "Building (" + str.tostring(proofTotal) + ")"
+color proofColor = not proofReady ? neutralColor : proofRate >= 55 ? bullColor : proofRate >= 45 ? neutralColor : bearColor
+
+// -------------------------------------------------
+// Alerts and event labels
+// -------------------------------------------------
+var string previousState = "WAIT"
+var array<label> eventLabels = array.new<label>()
+var int lastEventLabelBar = na
+var int lastContextLabelBar = na
+
+bool stateShiftEvent = confirmedBar and validPlan and planState != previousState
+bool readyEvent = stateShiftEvent and planState == "TARGET READY"
+bool blockedEvent = stateShiftEvent and planState == "BLOCKED"
+bool invalidationEvent = stateShiftEvent and planState == "INVALID REVIEW"
+bool targetTaggedEvent = confirmedBar and validPlan and hitCount > nz(hitCount[1])
+bool canEventLabel = na(lastEventLabelBar) or bar_index - lastEventLabelBar >= labelCooldownBars
+bool canContextLabel = na(lastContextLabelBar) or bar_index - lastContextLabelBar >= contextSpacingBars
+bool mainEvent = (readyEvent or blockedEvent or invalidationEvent or targetTaggedEvent) and canEventLabel
+bool contextAllowed = visualMode != "Clean Ladder" or planState == "TARGET READY" or planState == "BLOCKED"
+bool contextEvent = showContextLabels and contextAllowed and validPlan and not mainEvent and canContextLabel and (planState == "TARGET READY" or planState == "MONITOR" or planState == "BLOCKED")
+
+if showLabels and (mainEvent or contextEvent)
+    bool labelBelow = planDir == 1
+    float baseLabelY = labelBelow ? low - safeAtr * labelOffsetAtr : high + safeAtr * labelOffsetAtr
+    float labelY = f_avoid_overlap(eventLabels, baseLabelY, not labelBelow, safeAtr)
+    string qualityPart = showLabelScore and validPlan ? " | Q" + str.tostring(targetQuality) : ""
+    string progressPart = validPlan ? " | " + str.tostring(hitCount) + "/" + str.tostring(tierCount) : ""
+    string nextPart = validPlan and not planComplete ? "\nTP" + str.tostring(nearestTier) + " NEXT" : ""
+    string eventText = targetTaggedEvent ? sideText + " TP" + str.tostring(hitCount) + " TAGGED" + qualityPart + progressPart : contextEvent ? sideText + " " + planState + qualityPart + nextPart : sideText + " " + planState + qualityPart + nextPart
+    color labelColor = targetTaggedEvent ? neutralColor : stateColor
+    label newEventLabel = label.new(x = bar_index, y = labelY, text = eventText, xloc = xloc.bar_index, yloc = yloc.price, style = labelBelow ? label.style_label_up : label.style_label_down, color = color.new(labelColor, 7), textcolor = f_text_on(labelColor), size = f_text_size(labelFontSize), textalign = text.align_center)
+    array.push(eventLabels, newEventLabel)
+    f_trim_labels(eventLabels, maxVisibleLabels)
+    if mainEvent
+        lastEventLabelBar := bar_index
+    else
+        lastContextLabelBar := bar_index
+
+alertcondition(alertReady and readyEvent, "Target Path Ready", "Take Profit Planner: the nearest target path reached Target Ready state.")
+alertcondition(alertStateShift and stateShiftEvent, "Target State Shift", "Take Profit Planner: the target-management state changed.")
+alertcondition(alertTargetTagged and targetTaggedEvent, "Target Level Tagged", "Take Profit Planner: a TP level was tagged.")
+alertcondition(alertInvalidation and invalidationEvent, "Invalidation Review", "Take Profit Planner: price reached the invalidation review area.")
+
+if confirmedBar
+    previousState := planState
+
+// -------------------------------------------------
+// Drawings
+// -------------------------------------------------
+var array<box> renderBoxes = array.new<box>()
+var array<line> renderLines = array.new<line>()
+var array<label> renderLabels = array.new<label>()
+
+if barstate.islast
+    f_clear_boxes(renderBoxes)
+    f_clear_lines(renderLines)
+    f_clear_labels(renderLabels)
+
+    if validPlan
+        int leftEdge = bar_index
+        int rightEdge = bar_index + projectionBars
+        int centerEdge = int(math.round((leftEdge + rightEdge) * 0.5))
+        color directionColor = planDir == 1 ? bullColor : bearColor
+        float bandPad = safeAtr * zoneWidthAtr
+        bool manualVisual = visualMode == "Manual"
+        bool plannerVisual = visualMode == "Planner"
+        bool cleanVisual = visualMode == "Clean Ladder"
+        bool renderTargetPath = manualVisual ? showTargetPath : plannerVisual ? showTargetPath : false
+        bool renderObstruction = manualVisual ? showObstructionRail : plannerVisual ? showObstructionRail : false
+        bool renderEntryStrong = entryEmphasis == "Strong" and showEntry
+        bool renderEntryNormal = entryEmphasis != "Minimal" and showEntry
+
+        array<float> tagLvl = array.new<float>()
+        array<string> tagTxt = array.new<string>()
+        array<color> tagCol = array.new<color>()
+
+        if renderTargetPath
+            float topPath = math.max(close, nearestTp) + safeAtr * 0.08
+            float bottomPath = math.min(close, nearestTp) - safeAtr * 0.08
+            box pathBox = box.new(left = leftEdge, top = topPath, right = rightEdge, bottom = bottomPath, xloc = xloc.bar_index, bgcolor = color.new(stateColor, math.min(zoneTransparency + 3, 96)), border_color = color.new(stateColor, 42), border_width = 1)
+            array.push(renderBoxes, pathBox)
+            if showLabels
+                string pathText = sideText + " TARGET PATH | Q" + str.tostring(targetQuality) + "\nTP" + str.tostring(nearestTier) + " NEXT | " + str.tostring(nearestR, "#.##") + "R"
+                label pathBadge = label.new(centerEdge, (topPath + bottomPath) * 0.5, pathText, xloc = xloc.bar_index, yloc = yloc.price, style = label.style_label_center, color = color.new(stateColor, 4), textcolor = f_text_on(stateColor), size = f_text_size(labelFontSize), textalign = text.align_center)
+                array.push(renderLabels, pathBadge)
+
+        if showEntry
+            int entryWidth = entryEmphasis == "Strong" ? 3 : entryEmphasis == "Normal" ? 2 : 1
+            int entryTransp = entryEmphasis == "Minimal" ? 42 : 6
+            line entryLine = line.new(leftEdge, entryPx, rightEdge, entryPx, xloc = xloc.bar_index, color = color.new(accentColor, entryTransp), style = line.style_solid, width = entryWidth)
+            array.push(renderLines, entryLine)
+            if renderEntryStrong
+                box entryBand = box.new(left = leftEdge, top = entryPx + bandPad * 0.38, right = rightEdge, bottom = entryPx - bandPad * 0.38, xloc = xloc.bar_index, bgcolor = color.new(accentColor, 91), border_color = color.new(accentColor, 28), border_width = 1)
+                array.push(renderBoxes, entryBand)
+            if showLabels and renderEntryNormal
+                array.push(tagLvl, entryPx)
+                array.push(tagTxt, "ENTRY REF\n" + f_fmt_price(entryPx))
+                array.push(tagCol, accentColor)
+
+        if showInvalidation
+            box invalidBox = box.new(left = leftEdge, top = invalidPx + bandPad * 0.50, right = rightEdge, bottom = invalidPx - bandPad * 0.50, xloc = xloc.bar_index, bgcolor = color.new(dangerColor, 88), border_color = color.new(dangerColor, 36), border_width = 1)
+            array.push(renderBoxes, invalidBox)
+            if showLabels
+                array.push(tagLvl, invalidPx)
+                array.push(tagTxt, "INVALID\n" + f_fmt_price(invalidPx))
+                array.push(tagCol, dangerColor)
+
+        if renderObstruction and obstructionInPath
+            line obstacleLine = line.new(leftEdge, obstaclePx, rightEdge, obstaclePx, xloc = xloc.bar_index, color = color.new(neutralColor, 0), style = line.style_dotted, width = 2)
+            array.push(renderLines, obstacleLine)
+            if showLabels
+                array.push(tagLvl, obstaclePx)
+                array.push(tagTxt, "OBSTRUCTION\n" + f_fmt_price(obstaclePx))
+                array.push(tagCol, neutralColor)
+
+        for i = 1 to tierCount
+            float targetPx = array.get(tpPx, i - 1)
+            if not na(targetPx)
+                bool hitState = array.get(tpHit, i - 1)
+                bool nearestState = i == nearestTier and not planComplete
+                int confluence = array.get(tpScore, i - 1)
+                color tierColor = hitState ? neutralColor : nearestState ? stateColor : directionColor
+                int tierOpacity = nearestState ? math.max(zoneTransparency - 8, 70) : cleanVisual ? math.min(zoneTransparency + 2, 96) : zoneTransparency
+
+                if showZones
+                    box tpBox = box.new(left = leftEdge, top = targetPx + bandPad, right = rightEdge, bottom = targetPx - bandPad, xloc = xloc.bar_index, bgcolor = color.new(tierColor, tierOpacity), border_color = color.new(tierColor, nearestState ? 18 : 36), border_width = nearestState ? 2 : 1)
+                    array.push(renderBoxes, tpBox)
+                else
+                    line tpLine = line.new(leftEdge, targetPx, rightEdge, targetPx, xloc = xloc.bar_index, color = color.new(tierColor, 0), style = line.style_dashed, width = nearestState ? 2 : 1)
+                    array.push(renderLines, tpLine)
+
+                if showLabels
+                    string tierMethod = calcMode == "Fibonacci Extensions" ? str.tostring(f_get_fib(i), "#.###") + " FIB" : calcMode == "R-Multiples" ? str.tostring(f_get_r(i), "#.#") + "R" : "C" + str.tostring(confluence) + "/3"
+                    string allocText = f_get_alloc(i) > 0 ? " | " + str.tostring(f_get_alloc(i), "#") + "%" : ""
+                    string tierTag = hitState ? "TAGGED" : nearestState ? "NEXT" : "OPEN"
+                    string labelText = "TP" + str.tostring(i) + " " + tierTag + " | " + f_fmt_price(targetPx) + "\n" + tierMethod + allocText
+                    label tierBadge = label.new(centerEdge, targetPx, labelText, xloc = xloc.bar_index, yloc = yloc.price, style = label.style_label_center, color = color.new(tierColor, 4), textcolor = f_text_on(tierColor), size = f_text_size(labelFontSize), textalign = text.align_center)
+                    array.push(renderLabels, tierBadge)
+
+        // Right-side tag anti-collision: sort by level, then spread vertically
+        // around the cluster so the readout badges never overlap on tight ladders.
+        int tagN = array.size(tagLvl)
+        if tagN > 1
+            for a = 0 to tagN - 2
+                int minIdx = a
+                for b = a + 1 to tagN - 1
+                    if array.get(tagLvl, b) < array.get(tagLvl, minIdx)
+                        minIdx := b
+                if minIdx != a
+                    float swL = array.get(tagLvl, a)
+                    string swT = array.get(tagTxt, a)
+                    color swC = array.get(tagCol, a)
+                    array.set(tagLvl, a, array.get(tagLvl, minIdx))
+                    array.set(tagTxt, a, array.get(tagTxt, minIdx))
+                    array.set(tagCol, a, array.get(tagCol, minIdx))
+                    array.set(tagLvl, minIdx, swL)
+                    array.set(tagTxt, minIdx, swT)
+                    array.set(tagCol, minIdx, swC)
+        array<float> tagDisp = array.new<float>()
+        if tagN > 0
+            for k = 0 to tagN - 1
+                array.push(tagDisp, array.get(tagLvl, k))
+        float tagGap = rangeProxy * (labelFontSize == "Large" ? 0.088 : labelFontSize == "Small" ? 0.056 : labelFontSize == "Tiny" ? 0.046 : 0.072)
+        if tagN > 1
+            for k = 1 to tagN - 1
+                float prevY = array.get(tagDisp, k - 1)
+                if array.get(tagDisp, k) < prevY + tagGap
+                    array.set(tagDisp, k, prevY + tagGap)
+            for j = 0 to tagN - 2
+                int k = tagN - 2 - j
+                float nextY = array.get(tagDisp, k + 1)
+                if array.get(tagDisp, k) > nextY - tagGap
+                    array.set(tagDisp, k, nextY - tagGap)
+        if tagN > 0
+            for k = 0 to tagN - 1
+                color baseCol = array.get(tagCol, k)
+                label tagLabel = label.new(rightEdge, array.get(tagDisp, k), array.get(tagTxt, k), xloc = xloc.bar_index, yloc = yloc.price, style = label.style_label_left, color = color.new(baseCol, 4), textcolor = f_text_on(baseCol), size = f_text_size(labelFontSize), textalign = text.align_center)
+                array.push(renderLabels, tagLabel)
+
+// -------------------------------------------------
+// Panel
+// -------------------------------------------------
+string activeTheme = panelTheme
+string panelSize = panelFontSize
+color dashBg = f_panel_bg(activeTheme)
+color frameColor = f_panel_border(activeTheme)
+color labelCol = f_panel_label(activeTheme)
+color valueCol = f_panel_value(activeTheme)
+
+var table panel = table.new(f_panel_position(panelLocation), 2, 8, bgcolor = dashBg, frame_color = frameColor, frame_width = 1, border_color = frameColor, border_width = 1)
+
+if barstate.islast
+    table.clear(panel, 0, 0, 1, 7)
+    if showPanel
+        table.merge_cells(panel, 0, 0, 1, 0)
+        table.cell(panel, 0, 0, "AG Pro Take Profit Planner", text_color = f_text_on(headerBg), bgcolor = headerBg, text_size = f_text_size(panelSize), text_halign = text.align_center)
+
+        table.cell(panel, 0, 1, validPlan ? sideText + " Entry" : "Entry Reference", text_color = labelCol, bgcolor = f_row_bg(activeTheme, 1), text_size = f_text_size(panelSize), text_halign = text.align_left)
+        table.cell(panel, 1, 1, validPlan ? f_fmt_price(entryPx) : "Waiting", text_color = validPlan ? accentColor : valueCol, bgcolor = f_row_bg(activeTheme, 1), text_size = f_text_size(panelSize), text_halign = text.align_right)
+
+        table.cell(panel, 0, 2, "Nearest TP", text_color = labelCol, bgcolor = f_row_bg(activeTheme, 2), text_size = f_text_size(panelSize), text_halign = text.align_left)
+        table.cell(panel, 1, 2, nearestRead, text_color = valueCol, bgcolor = f_row_bg(activeTheme, 2), text_size = f_text_size(panelSize), text_halign = text.align_right)
+
+        table.cell(panel, 0, 3, "Target Quality", text_color = labelCol, bgcolor = f_row_bg(activeTheme, 3), text_size = f_text_size(panelSize), text_halign = text.align_left)
+        table.cell(panel, 1, 3, qualityRead, text_color = validPlan ? f_text_on(stateColor) : valueCol, bgcolor = validPlan ? stateColor : f_row_bg(activeTheme, 3), text_size = f_text_size(panelSize), text_halign = text.align_right)
+
+        table.cell(panel, 0, 4, "Target Proof", text_color = labelCol, bgcolor = f_row_bg(activeTheme, 4), text_size = f_text_size(panelSize), text_halign = text.align_left)
+        table.cell(panel, 1, 4, proofRead, text_color = f_text_on(proofColor), bgcolor = proofColor, text_size = f_text_size(panelSize), text_halign = text.align_right)
+
+        table.cell(panel, 0, 5, "Obstruction", text_color = labelCol, bgcolor = f_row_bg(activeTheme, 5), text_size = f_text_size(panelSize), text_halign = text.align_left)
+        table.cell(panel, 1, 5, obstructionRead, text_color = obstructionInPath ? neutralColor : valueCol, bgcolor = f_row_bg(activeTheme, 5), text_size = f_text_size(panelSize), text_halign = text.align_right)
+
+        table.cell(panel, 0, 6, "Current R", text_color = labelCol, bgcolor = f_row_bg(activeTheme, 6), text_size = f_text_size(panelSize), text_halign = text.align_left)
+        table.cell(panel, 1, 6, currentRRead, text_color = na(currentR) ? valueCol : currentR >= 0 ? valueCol : dangerColor, bgcolor = f_row_bg(activeTheme, 6), text_size = f_text_size(panelSize), text_halign = text.align_right)
+
+        table.cell(panel, 0, 7, "Action", text_color = labelCol, bgcolor = f_row_bg(activeTheme, 7), text_size = f_text_size(panelSize), text_halign = text.align_left)
+        table.cell(panel, 1, 7, actionText, text_color = validPlan ? f_text_on(stateColor) : valueCol, bgcolor = validPlan ? stateColor : f_row_bg(activeTheme, 7), text_size = f_text_size(panelSize), text_halign = text.align_right)

@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { RefreshCw } from "lucide-react";
 import {
   analyze,
@@ -13,6 +13,7 @@ import {
   type Analysis,
   type Candle,
   type FocusView,
+  type Interval,
 } from "@/lib/engine";
 import { formatClock, formatPct, formatPx, formatVn } from "@/lib/format";
 import { fetchBoard, scanPairs, type Board, type ScanHit } from "@/lib/market";
@@ -20,9 +21,9 @@ import { useDesk } from "@/lib/store";
 import { PriceChart } from "@/components/price-chart";
 import { Journal, SessionPanel, Settings, SignalDock } from "@/components/panels";
 
-function signature(rows: { id: string; status: string; exit?: number; sl: number; tp: number; sessionNote?: string; whaleNote?: string; wyckoffNote?: string }[]): string {
+function signature(rows: { id: string; status: string; exit?: number; exitTime?: number; sl: number; tp: number; sessionNote?: string; whaleNote?: string; wyckoffNote?: string }[]): string {
   return rows
-    .map((row) => `${row.id}:${row.status}:${row.exit ?? ""}:${row.sl}:${row.tp}:${row.sessionNote ?? ""}:${row.whaleNote ?? ""}:${row.wyckoffNote ?? ""}`)
+    .map((row) => `${row.id}:${row.status}:${row.exit ?? ""}:${row.exitTime ?? ""}:${row.sl}:${row.tp}:${row.sessionNote ?? ""}:${row.whaleNote ?? ""}:${row.wyckoffNote ?? ""}`)
     .join("|");
 }
 
@@ -39,7 +40,8 @@ function mergeCandles(prev: Board["rows"][number]["candles"], next: Board["rows"
 }
 
 function applyBoard(prev: Board | null, incoming: Board, symbols: string[]): Board {
-  const map = new Map(prev?.rows.map((row) => [row.symbol, row]) ?? []);
+  const base = prev && prev.interval === incoming.interval ? prev : null;
+  const map = new Map(base?.rows.map((row) => [row.symbol, row]) ?? []);
   for (const row of incoming.rows) {
     const old = map.get(row.symbol);
     if (row.candles.length === 0 && old) {
@@ -54,6 +56,7 @@ function applyBoard(prev: Board | null, incoming: Board, symbols: string[]): Boa
       return row ? [row] : [];
     }),
     fetchedAt: incoming.fetchedAt,
+    interval: incoming.interval,
   };
 }
 
@@ -72,6 +75,7 @@ export function Desk() {
   const [draft, setDraft] = useState("");
   const [formError, setFormError] = useState<string | null>(null);
   const [scanHits, setScanHits] = useState<ScanHit[] | null>(null);
+  const [scanInterval, setScanInterval] = useState<Interval | null>(null);
   const [scanning, setScanning] = useState(false);
   const [scanError, setScanError] = useState<string | null>(null);
   const [pinned, setPinned] = useState<number | null>(null);
@@ -102,6 +106,14 @@ export function Desk() {
   useEffect(() => {
     setPinned(null);
   }, [active, interval]);
+
+  const scanGen = useRef(0);
+
+  useEffect(() => {
+    scanGen.current += 1;
+    setScanHits(null);
+    setScanInterval(null);
+  }, [interval, params]);
 
   const missingKey = symbols.filter((symbol) => !board?.rows.some((row) => row.symbol === symbol)).join("|");
 
@@ -157,7 +169,7 @@ export function Desk() {
 
   const analyses = useMemo(() => {
     const map = new Map<string, Analysis>();
-    if (!board) return map;
+    if (!board || board.interval !== interval) return map;
     for (const row of board.rows) {
       if (row.candles.length > 0) map.set(row.symbol, analyze(row.candles, params, interval));
     }
@@ -165,15 +177,20 @@ export function Desk() {
   }, [board, params, interval, statsRun]);
 
   useEffect(() => {
-    if (!board) return;
+    if (!board || board.interval !== interval) return;
     const fresh = board.rows.flatMap((row) => {
       const found = analyses.get(row.symbol);
       if (!found) return [];
       return papersFrom(row.symbol, interval, row.candles, found, params);
     });
     const covered = board.rows.filter((row) => analyses.has(row.symbol)).map((row) => `${row.symbol}|${interval}`);
+    const windowStart: Record<string, number> = {};
+    for (const row of board.rows) {
+      const first = row.candles[0];
+      if (first) windowStart[`${row.symbol}|${interval}`] = first.time;
+    }
     const prev = Array.isArray(useDesk.getState().journal) ? useDesk.getState().journal : [];
-    const next = mergeJournal(prev, fresh, covered);
+    const next = mergeJournal(prev, fresh, covered, windowStart);
     if (signature(prev) !== signature(next)) useDesk.getState().setJournal(next);
   }, [board, analyses, interval, params, statsRun]);
 
@@ -319,18 +336,34 @@ export function Desk() {
                 className="h-11 rounded-md bg-bull px-3 text-sm font-medium text-ink disabled:opacity-60"
                 disabled={scanning}
                 onClick={() => {
+                  const id = ++scanGen.current;
+                  const requestedInterval = interval;
+                  const requestedKey = JSON.stringify(params);
                   setScanning(true);
                   setScanError(null);
-                  void scanPairs({ data: { interval, params } })
-                    .then((result) => setScanHits(result.hits))
-                    .catch((err: unknown) => setScanError(err instanceof Error ? err.message : "Không quét được"))
-                    .finally(() => setScanning(false));
+                  void scanPairs({ data: { interval: requestedInterval, params } })
+                    .then((result) => {
+                      if (scanGen.current !== id) return;
+                      if (useDesk.getState().interval !== requestedInterval) return;
+                      const current = clampParams({ ...defaultParams, ...useDesk.getState().params });
+                      if (JSON.stringify(current) !== requestedKey) return;
+                      setScanHits(result.hits);
+                      setScanInterval(requestedInterval);
+                    })
+                    .catch((err: unknown) => {
+                      if (scanGen.current !== id) return;
+                      setScanError(err instanceof Error ? err.message : "Không quét được");
+                    })
+                    .finally(() => {
+                      if (scanGen.current === id) setScanning(false);
+                    });
                 }}
               >
                 {scanning ? "Đang quét…" : "Quét top 100"}
               </button>
             </div>
             <p className="mt-2 text-xs text-muted">Top khối lượng 24 giờ trên Binance. Xếp theo tỷ lệ thắng nhân tổng lãi trong 3 ngày. Cặp lỗ xếp cuối.</p>
+            {scanInterval ? <p className="mt-1 font-mono text-xs text-fg">Kết quả khung {INTERVAL_LABEL[scanInterval]}</p> : null}
             {scanError ? <p className="mt-2 text-sm text-bear">{scanError}</p> : null}
             {scanHits ? (
               <ul className="mt-2 flex max-h-64 flex-col overflow-auto">

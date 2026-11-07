@@ -916,15 +916,19 @@ export function analyze(candles: Candle[], rawParams: Params, interval: Interval
   markers.sort((a, b) => a.index - b.index);
 
   const counts = { confirmedLong: 0, confirmedShort: 0, partial: 0, filtered: 0 };
+  const booked = papersFrom("_", interval, candles, { markers } as Analysis, params);
+  const entered = new Set(booked.map((paper) => `${paper.signalTime}|${paper.side}`));
   let lastConfirmed: Analysis["lastConfirmed"] = null;
+  for (const paper of booked) {
+    if (paper.side === "LONG") counts.confirmedLong += 1;
+    else counts.confirmedShort += 1;
+    lastConfirmed = { side: paper.side, time: paper.signalTime };
+  }
   for (const m of markers) {
-    if (m.provisional) continue;
-    const bookable = gatesOpen(m, params);
-    if (bookable && m.side === "LONG") counts.confirmedLong += 1;
-    else if (bookable && m.side === "SHORT") counts.confirmedShort += 1;
-    else if (m.smaOk) counts.partial += 1;
+    if (m.provisional || entered.has(`${candles[m.index].time}|${m.side}`)) continue;
+    if (gatesOpen(m, params)) continue;
+    if (m.smaOk) counts.partial += 1;
     else counts.filtered += 1;
-    if (bookable) lastConfirmed = { side: m.side, time: candles[m.index].time };
   }
 
   const whale = n > 0 ? whaleAt(n - 1) : emptyWhale();
@@ -1107,7 +1111,7 @@ export function papersFrom(symbol: string, interval: Interval, candles: Candle[]
         if (px > 0) {
           status = "reverse";
           exit = px;
-          exitTime = c.time;
+          exitTime = fill && fill.open > 0 ? fill.time : c.time;
           exitIndex = i;
           break;
         }
@@ -1136,12 +1140,16 @@ export function papersFrom(symbol: string, interval: Interval, candles: Candle[]
   return out;
 }
 
-export function mergeJournal(prev: Paper[], fresh: Paper[], covered: string[] = []): Paper[] {
+export function mergeJournal(prev: Paper[], fresh: Paper[], covered: string[] = [], windowStart: Record<string, number> = {}): Paper[] {
   const coveredSet = new Set(covered);
   const freshIds = new Set(fresh.map((p) => p.id));
   const map = new Map<string, Paper>();
   for (const p of prev) {
-    if (coveredSet.has(`${p.symbol}|${p.interval}`) && !freshIds.has(p.id)) continue;
+    const key = `${p.symbol}|${p.interval}`;
+    if (coveredSet.has(key) && !freshIds.has(p.id)) {
+      const start = windowStart[key];
+      if (start == null || p.signalTime >= start) continue;
+    }
     map.set(p.id, p);
   }
   for (const p of fresh) map.set(p.id, p);
